@@ -13,8 +13,8 @@ st.set_page_config(
 
 st.title("📊 MySQL Database Viewer")
 st.write(
-    "This app connects to your MySQL server and shows the tables and their data. "
-    "Use the sidebar to select a database."
+    "This app connects to your MySQL server and shows table data. "
+    "Select a database and a table from the sidebar."
 )
 
 # -----------------------------
@@ -70,7 +70,6 @@ def create_server_connection():
         )
         return conn
     except Error:
-        # We will handle the error gracefully in get_connection_or_fail()
         return None
 
 
@@ -81,7 +80,6 @@ def get_connection_or_fail():
     """
     conn = create_server_connection()
 
-    # If connection object is None or not connected, try once to reconnect
     if conn is None or not conn.is_connected():
         try:
             conn = mysql.connector.connect(
@@ -98,7 +96,7 @@ def get_connection_or_fail():
                 "Please check:\n"
                 "- That the server is running\n"
                 "- Host/port/user/password are correct\n"
-                "- That remote connections (e.g. from Streamlit Cloud) are allowed\n"
+                "- That remote connections are allowed\n"
                 "- Any firewall / security group rules\n\n"
                 f"Technical error: `{e}`"
             )
@@ -111,38 +109,44 @@ def get_connection_or_fail():
     return conn
 
 
-def get_databases(conn):
+@st.cache_data(show_spinner=False)
+def list_databases_cached():
     """
-    Return a list of databases on the server, excluding system databases.
-    If DB_NAME is set (single DB mode), just return that.
+    Cached wrapper to list databases (uses a fresh lightweight connection).
     """
-    if DB_NAME:
-        return [DB_NAME]
-
-    if conn is None or not conn.is_connected():
-        return []
-
-    system_dbs = {"information_schema", "mysql", "performance_schema", "sys"}
-
     try:
+        conn = mysql.connector.connect(
+            host=HOST,
+            port=PORT,
+            user=USER,
+            password=PASSWORD,
+            connection_timeout=10,
+        )
+        system_dbs = {"information_schema", "mysql", "performance_schema", "sys"}
         cursor = conn.cursor()
         cursor.execute("SHOW DATABASES")
         dbs = [row[0] for row in cursor.fetchall()]
         cursor.close()
+        conn.close()
         return [db for db in dbs if db not in system_dbs]
-    except Error as e:
-        st.error(f"Error while listing databases: `{e}`")
+    except Error:
         return []
+
+
+def get_databases():
+    """
+    If DB_NAME is set, we work in single-DB mode.
+    Otherwise we list all non-system DBs.
+    """
+    if DB_NAME:
+        return [DB_NAME]
+    return list_databases_cached()
 
 
 def use_database(conn, db_name):
     """
     Set the active database for the existing connection.
     """
-    if conn is None or not conn.is_connected():
-        st.error("Connection lost before selecting database.")
-        st.stop()
-
     try:
         cursor = conn.cursor()
         cursor.execute(f"USE `{db_name}`;")
@@ -152,40 +156,59 @@ def use_database(conn, db_name):
         st.stop()
 
 
-def get_tables(conn):
+@st.cache_data(show_spinner=False)
+def get_tables_cached(db_name: str):
     """
-    Return a list of tables in the currently selected database.
+    Cached list of tables for a given database.
+    Uses a fresh short-lived connection.
     """
-    if conn is None or not conn.is_connected():
-        st.error("Connection lost while trying to list tables.")
-        st.stop()
-
     try:
+        conn = mysql.connector.connect(
+            host=HOST,
+            port=PORT,
+            user=USER,
+            password=PASSWORD,
+            database=db_name,
+            connection_timeout=10,
+        )
         cursor = conn.cursor()
         cursor.execute("SHOW TABLES")
         tables = [row[0] for row in cursor.fetchall()]
         cursor.close()
+        conn.close()
         return tables
     except Error as e:
-        st.error(f"Error while listing tables: `{e}`")
+        st.error(f"Error while listing tables for `{db_name}`: `{e}`")
         return []
 
 
-def fetch_table_data(conn, table_name, limit=500):
+@st.cache_data(show_spinner=True)
+def fetch_table_data_cached(
+    db_name: str,
+    table_name: str,
+    limit: int,
+    offset: int,
+):
     """
-    Fetch up to `limit` rows from a table as a DataFrame.
+    Cached fetch for a slice of table data.
+    This keeps repeated views fast.
     """
-    if conn is None or not conn.is_connected():
-        st.error(f"Connection lost while reading table `{table_name}`.")
-        st.stop()
-
     try:
+        conn = mysql.connector.connect(
+            host=HOST,
+            port=PORT,
+            user=USER,
+            password=PASSWORD,
+            database=db_name,
+            connection_timeout=10,
+        )
         cursor = conn.cursor()
-        query = f"SELECT * FROM `{table_name}` LIMIT %s"
-        cursor.execute(query, (limit,))
+        query = f"SELECT * FROM `{table_name}` LIMIT %s OFFSET %s"
+        cursor.execute(query, (limit, offset))
         rows = cursor.fetchall()
         col_names = [desc[0] for desc in cursor.description]
         cursor.close()
+        conn.close()
         df = pd.DataFrame(rows, columns=col_names)
         return df
     except Error as e:
@@ -197,7 +220,6 @@ def fetch_table_data(conn, table_name, limit=500):
 # MAIN APP LOGIC
 # -----------------------------
 
-# 1. Get a working connection (or stop with a clear error)
 conn = get_connection_or_fail()
 
 with st.sidebar:
@@ -210,8 +232,7 @@ with st.sidebar:
 
     st.header("🗄️ Database selection")
 
-    databases = get_databases(conn)
-
+    databases = get_databases()
     if not databases:
         st.error("No databases found or you don't have permission to list them.")
         st.stop()
@@ -222,42 +243,64 @@ with st.sidebar:
     else:
         selected_db = st.selectbox("Choose a database:", databases)
 
-    row_limit = st.number_input(
-        "Rows to show per table",
-        min_value=10,
-        max_value=5000,
-        value=500,
+    st.divider()
+    st.header("📂 Table & rows")
+
+    # Get tables for selected DB
+    tables = get_tables_cached(selected_db)
+    if not tables:
+        st.error(f"No tables found in database `{selected_db}`.")
+        st.stop()
+
+    selected_table = st.selectbox("Choose a table:", tables)
+
+    # How many rows per page
+    page_size = st.number_input(
+        "Rows per page",
+        min_value=50,
+        max_value=2000,     # hard cap to avoid crashing
+        value=200,
         step=50,
-        help="Maximum number of rows to load for each table."
+        help="Number of rows to load at once. Larger values may be slower."
     )
 
-# 2. Ensure the chosen database is active
+    # Which page
+    page_number = st.number_input(
+        "Page number (starting from 1)",
+        min_value=1,
+        value=1,
+        step=1,
+        help="Use this to move through the table in chunks."
+    )
+
+    # Calculate offset for SQL
+    offset = int((page_number - 1) * page_size)
+
+# Switch DB on the main connection (mainly to verify it works)
 use_database(conn, selected_db)
 
-# 3. Get tables
-tables = get_tables(conn)
-
-if not tables:
-    st.warning(f"No tables found in database `{selected_db}`.")
-    st.stop()
-
 st.subheader(f"📚 Database: `{selected_db}`")
-st.write(f"Found **{len(tables)}** tables.")
+st.markdown(f"### 📂 Table: `{selected_table}`")
 
-# 4. Create tabs for each table
-tabs = st.tabs(tables)
+st.caption(
+    f"Showing **page {page_number}**, up to **{int(page_size)}** rows "
+    f"(offset {offset})."
+)
 
-for table_name, tab in zip(tables, tabs):
-    with tab:
-        st.markdown(f"### 📂 Table: `{table_name}`")
-        df = fetch_table_data(conn, table_name, limit=row_limit)
-        if df.empty:
-            st.info("No data (or failed to load data) for this table.")
-        else:
-            st.write(f"Showing up to **{len(df)}** rows.")
-            st.dataframe(df, use_container_width=True)
+# Fetch only the selected slice of the selected table
+df = fetch_table_data_cached(
+    db_name=selected_db,
+    table_name=selected_table,
+    limit=int(page_size),
+    offset=offset,
+)
 
-# 5. (Optional) Close connection when the script finishes
+if df.empty:
+    st.info("No data returned (or failed to load data) for this slice.")
+else:
+    st.dataframe(df, use_container_width=True)
+
+# Try to close the long-lived connection politely
 try:
     if conn is not None and conn.is_connected():
         conn.close()
