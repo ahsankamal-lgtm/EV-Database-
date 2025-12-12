@@ -1,5 +1,7 @@
-streamlit
-mysql-connector-python
-pandas
-openpyxl
-plotly
+streamlit>=1.33
+pandas>=2.0
+numpy>=1.24
+sqlalchemy>=2.0
+pymysql>=1.1
+pydeck>=0.9
+python-dateutil>=2.9
