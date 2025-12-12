@@ -8,6 +8,10 @@ from sqlalchemy import create_engine, text, bindparam
 from sqlalchemy.exc import OperationalError
 import pydeck as pdk
 
+
+# -----------------------------
+# Page config
+# -----------------------------
 st.set_page_config(page_title="🚲 Bike GPS Analytics (Traccar)", layout="wide")
 st.title("🚲 Bike GPS Analytics (Traccar)")
 st.caption("Distance, speed, trips, charging, daily active bikes, popular locations (tc_positions).")
@@ -59,8 +63,12 @@ def pick_time_field(df):
 
 def sanitize_err(e: Exception) -> str:
     s = str(e)
-    # remove anything that might look like a URL with creds
-    s = s.replace(st.secrets.get("traccar", {}).get("password", ""), "***") if "traccar" in st.secrets else s
+    try:
+        pwd = st.secrets["traccar"]["password"]
+        if pwd:
+            s = s.replace(pwd, "***")
+    except Exception:
+        pass
     return s
 
 
@@ -81,15 +89,15 @@ HOST = cfg["host"]
 PORT = int(cfg["port"])
 USER = cfg["user"]
 PASSWORD = cfg["password"]
-DB_DEFAULT = cfg["database"]
+DB_NAME = cfg["database"]  # ✅ should be traccar_new
 
 
 # -----------------------------
 # Engine
 # -----------------------------
 @st.cache_resource(show_spinner=False)
-def get_engine(db_name: str):
-    url = f"mysql+pymysql://{USER}:{PASSWORD}@{HOST}:{PORT}/{db_name}?charset=utf8mb4"
+def get_engine():
+    url = f"mysql+pymysql://{USER}:{PASSWORD}@{HOST}:{PORT}/{DB_NAME}?charset=utf8mb4"
     return create_engine(
         url,
         pool_pre_ping=True,
@@ -97,44 +105,37 @@ def get_engine(db_name: str):
         connect_args={"connect_timeout": 10},
     )
 
-def test_connection(db_name: str):
+def test_connection():
     try:
-        eng = get_engine(db_name)
+        eng = get_engine()
         with eng.connect() as c:
             c.execute(text("SELECT 1"))
         return True, "Connected ✅"
     except OperationalError as e:
-        # show the real underlying error type (sanitized)
         return False, sanitize_err(getattr(e, "orig", e))
 
 
 # -----------------------------
-# Sidebar
+# Sidebar: Connection + Filters
 # -----------------------------
 with st.sidebar:
     st.header("Database")
-    db_name = st.text_input("Database name", value=DB_DEFAULT)
+    st.write(f"Schema: **{DB_NAME}**")
 
-    ok, info = test_connection(db_name)
+    ok, info = test_connection()
     if ok:
         st.success(info)
     else:
         st.error("Connection failed ❌")
         st.code(info)
-        st.info(
-            "If this worked yesterday and fails today, it is usually one of:\n"
-            "1) Python version changed on Streamlit Cloud (fix with runtime.txt python-3.11)\n"
-            "2) Secrets formatting issue (password must be quoted)\n"
-            "3) DB/firewall rules changed\n"
-        )
         st.stop()
 
     st.divider()
     st.header("Filters")
 
-    # Load devices safely
+    # Load devices
     try:
-        with get_engine(db_name).connect() as c:
+        with get_engine().connect() as c:
             devices_df = pd.read_sql(text("SELECT id, name, uniqueid FROM tc_devices ORDER BY name"), c)
     except Exception as e:
         st.error("Connected, but failed to query tc_devices.")
@@ -161,24 +162,6 @@ with st.sidebar:
 
     start_dt = datetime.combine(start_date, datetime.min.time())
     end_dt = datetime.combine(end_date + timedelta(days=1), datetime.min.time())
-
-    st.divider()
-    st.subheader("Trip detection")
-    gap_minutes = st.slider("New trip if time gap exceeds (minutes)", 1, 120, 10)
-    ignition_key = st.text_input("Ignition key in attributes", value="ignition")
-    motion_key = st.text_input("Motion key in attributes", value="motion")
-
-    st.divider()
-    st.subheader("Charging detection")
-    charging_mode = st.selectbox("Charging mode", ["power_threshold", "attribute_key"])
-    charging_key = st.text_input("Charging boolean key", value="charging")
-    power_key = st.text_input("Power key", value="power")
-    power_threshold = st.number_input("Charging if power >= (volts)", value=13.0, step=0.1)
-
-    st.divider()
-    st.subheader("Consumption estimate")
-    battery_level_key = st.text_input("Battery level key (0-100)", value="batteryLevel")
-    capacity_kwh = st.number_input("Battery capacity (kWh)", value=2.0, step=0.1)
 
 if not device_ids:
     st.info("Select at least one device.")
@@ -207,8 +190,12 @@ q_positions = (
 )
 
 try:
-    with get_engine(db_name).connect() as c:
-        positions = pd.read_sql(q_positions, c, params={"device_ids": device_ids, "start_dt": start_dt, "end_dt": end_dt})
+    with get_engine().connect() as c:
+        positions = pd.read_sql(
+            q_positions,
+            c,
+            params={"device_ids": device_ids, "start_dt": start_dt, "end_dt": end_dt},
+        )
 except Exception as e:
     st.error("Failed to query tc_positions.")
     st.code(sanitize_err(e))
@@ -229,6 +216,7 @@ positions["speed_kmh"] = pd.to_numeric(positions["speed"], errors="coerce").fill
 positions = positions.sort_values(["deviceid", time_col]).copy()
 positions["prev_lat"] = positions.groupby("deviceid")["latitude"].shift(1)
 positions["prev_lon"] = positions.groupby("deviceid")["longitude"].shift(1)
+
 seg = haversine_km(
     positions["prev_lat"].fillna(positions["latitude"]),
     positions["prev_lon"].fillna(positions["longitude"]),
@@ -263,7 +251,6 @@ ACTIVE_KM_THRESHOLD = 0.2
 daily_km = positions.groupby(["day", "deviceid"], as_index=False)["seg_km"].sum()
 daily_km["active"] = daily_km["seg_km"] >= ACTIVE_KM_THRESHOLD
 daily_active = daily_km.groupby("day", as_index=False)["active"].sum().rename(columns={"active": "active_bikes"})
-
 
 # Popular locations (grid)
 grid_decimals = 3
@@ -345,7 +332,7 @@ with tab_locations:
     )
 
 with tab_a_to_b:
-    st.subheader("Distance from point A → point B")
+    st.subheader("Distance from point A → point B (route distance)")
     bike_name = st.selectbox("Bike", options=per_bike["device_name"].tolist(), key="a2b_bike")
     bike_id = int(per_bike.loc[per_bike["device_name"] == bike_name, "deviceid"].iloc[0])
     bike_df = positions[positions["deviceid"] == bike_id].sort_values(time_col).copy()
@@ -369,4 +356,4 @@ with tab_a_to_b:
             dist = float(segment["seg_km"].sum())
             st.success(f"Route distance A → B: **{dist:.2f} km**")
 
-st.caption("If connection fails, check runtime.txt (python-3.11) and secrets quoting. This version shows the real DB error (sanitized).")
+st.caption("✅ Using schema traccar_new. Speed: knots→km/h. Distance: haversine between consecutive points by fixtime.")
