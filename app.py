@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import json
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, time
 
 from sqlalchemy import create_engine, text, bindparam
 from sqlalchemy.engine import URL
@@ -99,6 +99,13 @@ def clean_for_pydeck(df: pd.DataFrame) -> pd.DataFrame:
     out = out.dropna(subset=["latitude", "longitude"]).copy()
     out = out.replace([np.inf, -np.inf], None)
     return out
+
+def clamp_dt(x: datetime, lo: datetime, hi: datetime) -> datetime:
+    if x < lo:
+        return lo
+    if x > hi:
+        return hi
+    return x
 
 
 # =============================
@@ -352,11 +359,7 @@ with st.sidebar:
         st.warning("No devices found in tc_devices.")
         st.stop()
 
-    # IMPORTANT:
-    # - positions are keyed by tc_positions.deviceid
-    # - this matches tc_devices.id
-    # So our unique identifier for devices in all analytics is deviceid.
-    devices_df = devices_df.rename(columns={"id": "deviceid"})  # make it explicit
+    devices_df = devices_df.rename(columns={"id": "deviceid"})  # explicit key
 
     device_label = devices_df.apply(
         lambda r: f"{r['name']}  (deviceid={int(r['deviceid'])}, uniqueid={r['uniqueid']})",
@@ -414,14 +417,12 @@ if positions.empty or time_col is None:
 positions = positions.dropna(subset=["latitude", "longitude", time_col]).copy()
 positions = positions.sort_values(["deviceid", time_col]).copy()
 
-# Map deviceid -> name + uniqueid for display
 deviceid_to_name = dict(zip(devices_df["deviceid"], devices_df["name"]))
 deviceid_to_uniqueid = dict(zip(devices_df["deviceid"], devices_df["uniqueid"]))
 
 positions["device_name"] = positions["deviceid"].map(lambda x: deviceid_to_name.get(int(x), str(x)))
 positions["device_uniqueid"] = positions["deviceid"].map(lambda x: deviceid_to_uniqueid.get(int(x), ""))
 
-# Total distance (sum of segment distances) keyed by deviceid
 positions["prev_lat"] = positions.groupby("deviceid")["latitude"].shift(1)
 positions["prev_lon"] = positions.groupby("deviceid")["longitude"].shift(1)
 
@@ -456,13 +457,11 @@ overall_avg_speed = float(per_bike["avg_kmh"].mean()) if len(per_bike) else 0.0
 overall_avg_distance = float(per_bike["total_km"].mean()) if len(per_bike) else 0.0
 overall_max_speed = float(per_bike["max_kmh"].max()) if len(per_bike) else 0.0
 
-# Daily active bikes keyed by (day, deviceid)
 ACTIVE_KM_THRESHOLD = 0.2
 daily_km = positions.groupby(["day", "deviceid"], as_index=False)["seg_km"].sum()
 daily_km["active"] = daily_km["seg_km"] >= ACTIVE_KM_THRESHOLD
 daily_active = daily_km.groupby("day", as_index=False)["active"].sum().rename(columns={"active": "active_bikes"})
 
-# Trips keyed by deviceid
 pos_with_trips, trips = detect_trips(positions, time_col=time_col, gap_minutes=gap_minutes)
 trips_per_bike = (
     trips.groupby("deviceid", as_index=False)
@@ -470,7 +469,6 @@ trips_per_bike = (
 )
 trips_per_bike["device_name"] = trips_per_bike["deviceid"].map(lambda x: deviceid_to_name.get(int(x), str(x)))
 
-# Charging keyed by deviceid
 charge_sessions, charge_daily = detect_charging(
     positions,
     time_col=time_col,
@@ -486,7 +484,6 @@ if not charge_sessions.empty:
 if not charge_daily.empty:
     charge_daily["device_name"] = charge_daily["deviceid"].map(lambda x: deviceid_to_name.get(int(x), str(x)))
 
-# Popular locations (grid)
 grid_decimals = 3
 positions["cell_lat"] = np.round(positions["latitude"], grid_decimals)
 positions["cell_lon"] = np.round(positions["longitude"], grid_decimals)
@@ -624,17 +621,28 @@ with tab_a_to_b:
 
     bike_df = positions[positions["deviceid"] == int(bike_id)].sort_values(time_col).copy()
 
-    min_t = bike_df[time_col].min().to_pydatetime()
-    max_t = bike_df[time_col].max().to_pydatetime()
+    min_dt = bike_df[time_col].min().to_pydatetime()
+    max_dt = bike_df[time_col].max().to_pydatetime()
 
     colA, colB = st.columns(2)
+
+    # ✅ FIX: use date_input + time_input instead of st.datetime_input
     with colA:
-        tA = st.datetime_input("Point A time", value=min_t, min_value=min_t, max_value=max_t)
+        a_date = st.date_input("Point A date", value=min_dt.date(), min_value=min_dt.date(), max_value=max_dt.date(), key="a_date")
+        a_time = st.time_input("Point A time", value=min_dt.time().replace(microsecond=0), key="a_time")
+        tA = datetime.combine(a_date, a_time)
+
     with colB:
-        tB = st.datetime_input("Point B time", value=max_t, min_value=min_t, max_value=max_t)
+        b_date = st.date_input("Point B date", value=max_dt.date(), min_value=min_dt.date(), max_value=max_dt.date(), key="b_date")
+        b_time = st.time_input("Point B time", value=max_dt.time().replace(microsecond=0), key="b_time")
+        tB = datetime.combine(b_date, b_time)
+
+    # Clamp to available range (prevents empty range selection)
+    tA = clamp_dt(tA, min_dt, max_dt)
+    tB = clamp_dt(tB, min_dt, max_dt)
 
     if tA > tB:
-        st.error("Point A time must be <= Point B time.")
+        st.error("Point A datetime must be <= Point B datetime.")
     else:
         segment = bike_df[(bike_df[time_col] >= pd.to_datetime(tA)) & (bike_df[time_col] <= pd.to_datetime(tB))].copy()
         if len(segment) < 2:
