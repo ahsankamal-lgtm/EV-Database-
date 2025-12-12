@@ -1,7 +1,7 @@
 streamlit>=1.33
-pandas>=2.0
-numpy>=1.24
-sqlalchemy>=2.0
-pymysql>=1.1
+pandas>=2.1
+numpy>=1.26
+sqlalchemy>=2.0.25
+pymysql>=1.1.0
 pydeck>=0.9
 python-dateutil>=2.9
