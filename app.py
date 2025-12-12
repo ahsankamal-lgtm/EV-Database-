@@ -6,6 +6,8 @@ from datetime import datetime, timedelta, date
 
 from sqlalchemy import create_engine, text, bindparam
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.engine import URL
+
 import pydeck as pdk
 
 
@@ -44,6 +46,7 @@ def knots_to_kmh(knots):
     return float(knots) * 1.852
 
 def haversine_km(lat1, lon1, lat2, lon2):
+    """Vectorized haversine (km)."""
     R = 6371.0088
     lat1 = np.radians(lat1.astype(float))
     lon1 = np.radians(lon1.astype(float))
@@ -93,11 +96,24 @@ DB_NAME = cfg["database"]  # ✅ should be traccar_new
 
 
 # -----------------------------
-# Engine
+# Engine (IMPORTANT FIX HERE)
 # -----------------------------
 @st.cache_resource(show_spinner=False)
 def get_engine():
-    url = f"mysql+pymysql://{USER}:{PASSWORD}@{HOST}:{PORT}/{DB_NAME}?charset=utf8mb4"
+    """
+    Creates SQLAlchemy engine safely.
+    This avoids breaking the host when password contains special characters like '@'.
+    """
+    url = URL.create(
+        drivername="mysql+pymysql",
+        username=USER,
+        password=PASSWORD,
+        host=HOST,
+        port=PORT,
+        database=DB_NAME,
+        query={"charset": "utf8mb4"},
+    )
+
     return create_engine(
         url,
         pool_pre_ping=True,
@@ -113,6 +129,8 @@ def test_connection():
         return True, "Connected ✅"
     except OperationalError as e:
         return False, sanitize_err(getattr(e, "orig", e))
+    except Exception as e:
+        return False, sanitize_err(e)
 
 
 # -----------------------------
@@ -120,6 +138,7 @@ def test_connection():
 # -----------------------------
 with st.sidebar:
     st.header("Database")
+    st.write(f"Host: `{HOST}`  Port: `{PORT}`")
     st.write(f"Schema: **{DB_NAME}**")
 
     ok, info = test_connection()
@@ -136,7 +155,10 @@ with st.sidebar:
     # Load devices
     try:
         with get_engine().connect() as c:
-            devices_df = pd.read_sql(text("SELECT id, name, uniqueid FROM tc_devices ORDER BY name"), c)
+            devices_df = pd.read_sql(
+                text("SELECT id, name, uniqueid FROM tc_devices ORDER BY name"),
+                c
+            )
     except Exception as e:
         st.error("Connected, but failed to query tc_devices.")
         st.code(sanitize_err(e))
@@ -211,7 +233,11 @@ if positions.empty or time_col is None:
     st.stop()
 
 positions = positions.dropna(subset=["latitude", "longitude", time_col]).copy()
-positions["speed_kmh"] = pd.to_numeric(positions["speed"], errors="coerce").fillna(0.0).apply(knots_to_kmh)
+positions["speed_kmh"] = (
+    pd.to_numeric(positions["speed"], errors="coerce")
+    .fillna(0.0)
+    .apply(knots_to_kmh)
+)
 
 positions = positions.sort_values(["deviceid", time_col]).copy()
 positions["prev_lat"] = positions.groupby("deviceid")["latitude"].shift(1)
@@ -356,4 +382,4 @@ with tab_a_to_b:
             dist = float(segment["seg_km"].sum())
             st.success(f"Route distance A → B: **{dist:.2f} km**")
 
-st.caption("✅ Using schema traccar_new. Speed: knots→km/h. Distance: haversine between consecutive points by fixtime.")
+st.caption("✅ Engine creation is inside app.py. No extra Python file needed.")
