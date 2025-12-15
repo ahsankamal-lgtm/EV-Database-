@@ -115,13 +115,8 @@ def extract_attr_numeric(series_attrs: pd.Series, key: str) -> pd.Series:
     out = attrs.apply(lambda a: a.get(key, None))
     return pd.to_numeric(out, errors="coerce")
 
-def extract_attr_str(series_attrs: pd.Series, key: str) -> pd.Series:
-    attrs = series_attrs.apply(safe_json)
-    out = attrs.apply(lambda a: a.get(key, None))
-    return out.apply(lambda v: "" if v is None else str(v))
-
 def pick_chassis_from_attrs(attrs_dict: dict) -> str:
-    # Try common keys (you can extend this list anytime)
+    # Try common keys (extend if needed)
     keys = ["chassis", "chassisNo", "chassis_no", "chassisNumber", "vin", "VIN", "vehicleVin", "uniqueid", "uniqueId"]
     for k in keys:
         v = attrs_dict.get(k, None)
@@ -239,7 +234,6 @@ def load_positions(device_ids: list[int], start_dt: datetime, end_dt: datetime) 
 
 @st.cache_data(ttl=120, show_spinner=False)
 def load_device_ids_seen(start_dt: datetime, end_dt: datetime) -> list[int]:
-    # Pull device list from tc_positions (NOT tc_devices)
     q = text("""
         SELECT DISTINCT deviceid
         FROM tc_positions
@@ -256,7 +250,6 @@ def load_chassis_index_from_positions(device_ids: list[int], start_dt: datetime,
     Build a chassis index primarily from tc_positions.attributes within the selected date range.
     Falls back to tc_devices.uniqueid only if needed.
     """
-    # Sample latest few positions per device to find chassis in attributes
     q = (
         text("""
             SELECT p.deviceid, p.fixtime, p.attributes
@@ -275,17 +268,15 @@ def load_chassis_index_from_positions(device_ids: list[int], start_dt: datetime,
     if df.empty:
         return pd.DataFrame(columns=["deviceid", "chassis_no"])
 
-    # Parse chassis from attributes
     df["attrs"] = df["attributes"].apply(safe_json)
     df["ch_from_attrs"] = df["attrs"].apply(pick_chassis_from_attrs)
-    # Take first non-empty per device
+
     out = (
         df.sort_values(["deviceid", "fixtime"], ascending=[True, False])
           .groupby("deviceid", as_index=False)
           .agg(chassis_no=("ch_from_attrs", lambda s: next((x for x in s if str(x).strip()), "")))
     )
 
-    # Fallback to tc_devices.uniqueid if present and attrs empty
     if table_exists("tc_devices"):
         try:
             with get_engine().connect() as c:
@@ -314,13 +305,8 @@ def load_geofences():
 
 @st.cache_data(ttl=60, show_spinner=False)
 def load_geofence_events(device_ids: list[int], start_dt: datetime, end_dt: datetime) -> pd.DataFrame:
-    """
-    FIXED: robust against missing tc_events table / missing columns / permission issues.
-    This prevents the OperationalError from crashing the app.
-    """
     if not table_exists("tc_events"):
         return pd.DataFrame(columns=["id", "deviceid", "type", "servertime", "geofenceid", "positionid", "attributes"])
-
     try:
         q = (
             text("""
@@ -349,9 +335,7 @@ def load_geofence_events(device_ids: list[int], start_dt: datetime, end_dt: date
         if not df.empty:
             df["servertime"] = pd.to_datetime(df["servertime"], errors="coerce")
         return df
-
     except Exception:
-        # Do NOT crash the app; return empty so UI still works
         return pd.DataFrame(columns=["id", "deviceid", "type", "servertime", "geofenceid", "positionid", "attributes"])
 
 
@@ -359,13 +343,6 @@ def load_geofence_events(device_ids: list[int], start_dt: datetime, end_dt: date
 # Charging analytics (no sidebar controls)
 # =============================
 def detect_charging_fixed(df: pd.DataFrame, time_col: str):
-    """
-    Charging detection uses fixed keys from tc_positions.attributes:
-      - charging (bool-ish)
-    Produces:
-      - per-day: charging_minutes, charges_in_day, avg_daily_hours_of_charge
-      - session timestamps per bike
-    """
     if df.empty:
         return pd.DataFrame(), pd.DataFrame()
 
@@ -429,7 +406,6 @@ with st.sidebar:
     st.divider()
     st.header("Bike selection (Chassis No.)")
 
-    # Device ids from tc_positions in the selected date range
     device_ids_in_range = load_device_ids_seen(start_dt, end_dt)
     if not device_ids_in_range:
         st.warning("No devices found in tc_positions for the selected date range.")
@@ -437,19 +413,23 @@ with st.sidebar:
 
     chassis_index = load_chassis_index_from_positions(device_ids_in_range, start_dt, end_dt)
 
-    # Filter to chassis starting with LH (as requested)
+    # ✅ FIX (only): make chassis detection robust + don't hide the widget
     chassis_index["chassis_no"] = chassis_index["chassis_no"].fillna("").astype(str).str.strip()
-    chassis_index = chassis_index[chassis_index["chassis_no"].str.startswith("LH", na=False)].copy()
+    chassis_index["chassis_no_norm"] = chassis_index["chassis_no"].str.upper().str.strip()
 
-    if chassis_index.empty:
-        st.warning("No chassis numbers starting with 'LH' were found in tc_positions (attributes) for this date range.")
+    # Prefer chassis that start with LH (case-insensitive), BUT if none match, show all non-empty chassis
+    preferred = chassis_index[chassis_index["chassis_no_norm"].str.startswith("LH", na=False)].copy()
+    if preferred.empty:
+        preferred = chassis_index[chassis_index["chassis_no_norm"] != ""].copy()
+
+    preferred = preferred.drop_duplicates(subset=["chassis_no_norm"]).copy()
+
+    if preferred.empty:
+        st.warning("No chassis numbers found in tc_positions (attributes) for this date range.")
         st.stop()
 
-    # Ensure uniqueness
-    chassis_index = chassis_index.drop_duplicates(subset=["chassis_no"]).copy()
-
-    chassis_list = sorted(chassis_index["chassis_no"].tolist())
-    chassis_to_deviceid = dict(zip(chassis_index["chassis_no"], chassis_index["deviceid"]))
+    chassis_list = sorted(preferred["chassis_no"].tolist())
+    chassis_to_deviceid = dict(zip(preferred["chassis_no"], preferred["deviceid"]))
 
     selected_chassis = st.multiselect(
         "Select bikes (chassis number)",
@@ -476,8 +456,8 @@ if positions.empty or time_col is None:
 positions = positions.dropna(subset=["latitude", "longitude", time_col]).copy()
 positions = positions.sort_values(["deviceid", time_col]).copy()
 
-# Attach chassis_no from the index (positions-first)
-deviceid_to_chassis = dict(zip(chassis_index["deviceid"], chassis_index["chassis_no"]))
+# Attach chassis_no from the index
+deviceid_to_chassis = dict(zip(preferred["deviceid"], preferred["chassis_no"]))
 positions["chassis_no"] = positions["deviceid"].map(lambda x: str(deviceid_to_chassis.get(int(x), "")).strip())
 
 # Pull SOC + temp1 from tc_positions.attributes
@@ -546,7 +526,7 @@ if not charge_sessions.empty:
 if not charge_daily.empty:
     charge_daily["chassis_no"] = charge_daily["deviceid"].map(lambda x: str(deviceid_to_chassis.get(int(x), "")).strip())
 
-# Geofence alerts (robust, won’t crash if tc_events missing)
+# Geofence alerts (robust)
 geofence_events = load_geofence_events(selected_deviceids, start_dt, end_dt)
 geofences = load_geofences()
 geofence_id_to_name = dict(zip(geofences.get("id", pd.Series(dtype=int)), geofences.get("name", pd.Series(dtype=str))))
@@ -558,7 +538,6 @@ if not geofence_events.empty:
     )
     geofence_events["event"] = geofence_events["type"].map(lambda t: "ENTER" if t == "geofenceEnter" else ("EXIT" if t == "geofenceExit" else t))
 
-    # Notifications (enter/exit)
     if "last_geofence_event_id" not in st.session_state:
         st.session_state["last_geofence_event_id"] = None
 
@@ -580,8 +559,6 @@ if not geofence_events.empty:
 
 # =============================
 # Tabs
-# Removed: Trips tab (Trip detection removed)
-# Removed: Daily active bikes from overview
 # =============================
 tab_overview, tab_bike, tab_charging, tab_map, tab_a_to_b, tab_geofence = st.tabs(
     ["Overview", "Bike Metrics", "Charging", "Map", "Distance A → B", "Geofence Alerts"]
@@ -669,7 +646,6 @@ with tab_map:
     st.subheader("Map: Full travel paths + all points + popular locations highlighted")
     st.caption(f"Popular locations are based on a rounded grid of {grid_decimals} decimals.")
 
-    # Paths per selected bike (plot traveling)
     path_rows = []
     for did, g in positions.sort_values(time_col).groupby("deviceid"):
         coords = g[["longitude", "latitude"]].dropna().values.tolist()
@@ -679,10 +655,8 @@ with tab_map:
 
     paths_df = pd.DataFrame(path_rows)
 
-    # Every point (all datapoints)
     points_df = clean_for_pydeck_points(positions[["latitude", "longitude", "chassis_no", "speed_kmh"]].copy())
 
-    # Hotspots (pinpoint/highlight popular)
     hot = top_cells.copy()
     hot = hot.rename(columns={"cell_lat": "latitude", "cell_lon": "longitude"})
     hot["radius"] = (hot["points"].astype(float).clip(lower=1.0) ** 0.5) * 120.0
@@ -726,7 +700,6 @@ with tab_map:
     if points_df.empty and hot.empty and paths_df.empty:
         st.info("No valid map data to display.")
     else:
-        # View center
         if not points_df.empty:
             center_lat = float(points_df["latitude"].mean())
             center_lon = float(points_df["longitude"].mean())
@@ -810,4 +783,4 @@ with tab_geofence:
         view = geofence_events[["servertime", "event", "chassis_no", "geofence_name"]].copy()
         st.dataframe(view.sort_values("servertime", ascending=False), use_container_width=True)
 
-st.caption("✅ Bikes are identified and displayed using chassis number (prefers tc_positions.attributes; filtered to chassis starting with 'LH').")
+st.caption("✅ Bike selection uses chassis numbers from tc_positions (attributes) and prefers those starting with 'LH'.")
