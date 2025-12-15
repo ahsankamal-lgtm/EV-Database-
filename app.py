@@ -14,7 +14,7 @@ import pydeck as pdk
 # =============================
 st.set_page_config(page_title="🚲 Bike GPS Analytics (Traccar)", layout="wide")
 st.title("🚲 Bike GPS Analytics (Traccar)")
-st.caption("All metrics are keyed by chassis number (tc_devices.uniqueid).")
+st.caption("All metrics are keyed by chassis number (usually starts with 'LH'). Data is primarily sourced from tc_positions.")
 
 
 # =============================
@@ -75,9 +75,10 @@ def to_plain_str(x):
         return ""
     return str(x)
 
-def clean_for_pydeck(df: pd.DataFrame) -> pd.DataFrame:
+def clean_for_pydeck_points(df: pd.DataFrame) -> pd.DataFrame:
     """
     Make sure pydeck only receives JSON-serializable values.
+    Expects: latitude, longitude, chassis_no, speed_kmh
     """
     if df.empty:
         return df
@@ -86,10 +87,8 @@ def clean_for_pydeck(df: pd.DataFrame) -> pd.DataFrame:
     keep = [c for c in ["latitude", "longitude", "chassis_no", "speed_kmh"] if c in out.columns]
     out = out[keep].copy()
 
-    if "latitude" in out.columns:
-        out["latitude"] = out["latitude"].apply(to_plain_float)
-    if "longitude" in out.columns:
-        out["longitude"] = out["longitude"].apply(to_plain_float)
+    out["latitude"] = out["latitude"].apply(to_plain_float)
+    out["longitude"] = out["longitude"].apply(to_plain_float)
     if "speed_kmh" in out.columns:
         out["speed_kmh"] = out["speed_kmh"].apply(to_plain_float)
     if "chassis_no" in out.columns:
@@ -116,6 +115,23 @@ def extract_attr_numeric(series_attrs: pd.Series, key: str) -> pd.Series:
     out = attrs.apply(lambda a: a.get(key, None))
     return pd.to_numeric(out, errors="coerce")
 
+def extract_attr_str(series_attrs: pd.Series, key: str) -> pd.Series:
+    attrs = series_attrs.apply(safe_json)
+    out = attrs.apply(lambda a: a.get(key, None))
+    return out.apply(lambda v: "" if v is None else str(v))
+
+def pick_chassis_from_attrs(attrs_dict: dict) -> str:
+    # Try common keys (you can extend this list anytime)
+    keys = ["chassis", "chassisNo", "chassis_no", "chassisNumber", "vin", "VIN", "vehicleVin", "uniqueid", "uniqueId"]
+    for k in keys:
+        v = attrs_dict.get(k, None)
+        if v is None:
+            continue
+        v = str(v).strip()
+        if v:
+            return v
+    return ""
+
 
 # =============================
 # Secrets / Config
@@ -138,7 +154,7 @@ DB_NAME = cfg["database"]  # should be traccar_new
 
 
 # =============================
-# Engine (safe for @ in password)
+# Engine
 # =============================
 @st.cache_resource(show_spinner=False)
 def get_engine():
@@ -166,19 +182,25 @@ def test_connection():
     except Exception as e:
         return False, str(getattr(e, "orig", e))
 
+@st.cache_data(ttl=600, show_spinner=False)
+def table_exists(table_name: str) -> bool:
+    try:
+        with get_engine().connect() as c:
+            q = text("""
+                SELECT COUNT(*) AS cnt
+                FROM information_schema.tables
+                WHERE table_schema = :db
+                  AND table_name = :t
+            """)
+            r = c.execute(q, {"db": DB_NAME, "t": table_name}).mappings().first()
+            return int(r["cnt"]) > 0
+    except Exception:
+        return False
+
 
 # =============================
-# DB Loads
+# DB Loads (positions-first)
 # =============================
-@st.cache_data(ttl=120, show_spinner=False)
-def load_devices():
-    # tc_devices.id is the device primary key that matches tc_positions.deviceid
-    with get_engine().connect() as c:
-        return pd.read_sql(
-            text("SELECT id, name, uniqueid FROM tc_devices ORDER BY name"),
-            c
-        )
-
 @st.cache_data(ttl=120, show_spinner=True)
 def load_positions(device_ids: list[int], start_dt: datetime, end_dt: datetime) -> pd.DataFrame:
     q = (
@@ -216,54 +238,133 @@ def load_positions(device_ids: list[int], start_dt: datetime, end_dt: datetime) 
     return df
 
 @st.cache_data(ttl=120, show_spinner=False)
-def load_geofences():
-    # Standard Traccar schema
+def load_device_ids_seen(start_dt: datetime, end_dt: datetime) -> list[int]:
+    # Pull device list from tc_positions (NOT tc_devices)
+    q = text("""
+        SELECT DISTINCT deviceid
+        FROM tc_positions
+        WHERE fixtime >= :start_dt AND fixtime < :end_dt
+        ORDER BY deviceid
+    """)
     with get_engine().connect() as c:
-        try:
-            return pd.read_sql(text("SELECT id, name, area, attributes FROM tc_geofences ORDER BY name"), c)
-        except Exception:
-            return pd.DataFrame(columns=["id", "name", "area", "attributes"])
+        rows = c.execute(q, {"start_dt": start_dt, "end_dt": end_dt}).fetchall()
+    return [int(r[0]) for r in rows]
 
-@st.cache_data(ttl=60, show_spinner=False)
-def load_geofence_events(device_ids: list[int], start_dt: datetime, end_dt: datetime) -> pd.DataFrame:
+@st.cache_data(ttl=120, show_spinner=False)
+def load_chassis_index_from_positions(device_ids: list[int], start_dt: datetime, end_dt: datetime) -> pd.DataFrame:
+    """
+    Build a chassis index primarily from tc_positions.attributes within the selected date range.
+    Falls back to tc_devices.uniqueid only if needed.
+    """
+    # Sample latest few positions per device to find chassis in attributes
     q = (
         text("""
-            SELECT
-                id,
-                deviceid,
-                type,
-                servertime,
-                geofenceid,
-                positionid,
-                attributes
-            FROM tc_events
-            WHERE deviceid IN :device_ids
-              AND servertime >= :start_dt
-              AND servertime < :end_dt
-              AND type IN ('geofenceEnter','geofenceExit')
-            ORDER BY servertime DESC
-            LIMIT 500
+            SELECT p.deviceid, p.fixtime, p.attributes
+            FROM tc_positions p
+            WHERE p.deviceid IN :device_ids
+              AND p.fixtime >= :start_dt
+              AND p.fixtime < :end_dt
+            ORDER BY p.deviceid, p.fixtime DESC
         """)
         .bindparams(bindparam("device_ids", expanding=True))
     )
+
     with get_engine().connect() as c:
         df = pd.read_sql(q, c, params={"device_ids": device_ids, "start_dt": start_dt, "end_dt": end_dt})
 
-    if not df.empty:
-        df["servertime"] = pd.to_datetime(df["servertime"], errors="coerce")
-    return df
+    if df.empty:
+        return pd.DataFrame(columns=["deviceid", "chassis_no"])
+
+    # Parse chassis from attributes
+    df["attrs"] = df["attributes"].apply(safe_json)
+    df["ch_from_attrs"] = df["attrs"].apply(pick_chassis_from_attrs)
+    # Take first non-empty per device
+    out = (
+        df.sort_values(["deviceid", "fixtime"], ascending=[True, False])
+          .groupby("deviceid", as_index=False)
+          .agg(chassis_no=("ch_from_attrs", lambda s: next((x for x in s if str(x).strip()), "")))
+    )
+
+    # Fallback to tc_devices.uniqueid if present and attrs empty
+    if table_exists("tc_devices"):
+        try:
+            with get_engine().connect() as c:
+                dev = pd.read_sql(text("SELECT id AS deviceid, uniqueid FROM tc_devices"), c)
+            dev["uniqueid"] = dev["uniqueid"].fillna("").astype(str).str.strip()
+            out = out.merge(dev, on="deviceid", how="left")
+            out["chassis_no"] = out["chassis_no"].fillna("").astype(str).str.strip()
+            out["uniqueid"] = out["uniqueid"].fillna("").astype(str).str.strip()
+            out["chassis_no"] = np.where(out["chassis_no"] == "", out["uniqueid"], out["chassis_no"])
+            out = out.drop(columns=["uniqueid"])
+        except Exception:
+            pass
+
+    out["chassis_no"] = out["chassis_no"].fillna("").astype(str).str.strip()
+    return out
+
+@st.cache_data(ttl=120, show_spinner=False)
+def load_geofences():
+    if not table_exists("tc_geofences"):
+        return pd.DataFrame(columns=["id", "name", "area", "attributes"])
+    try:
+        with get_engine().connect() as c:
+            return pd.read_sql(text("SELECT id, name, area, attributes FROM tc_geofences ORDER BY name"), c)
+    except Exception:
+        return pd.DataFrame(columns=["id", "name", "area", "attributes"])
+
+@st.cache_data(ttl=60, show_spinner=False)
+def load_geofence_events(device_ids: list[int], start_dt: datetime, end_dt: datetime) -> pd.DataFrame:
+    """
+    FIXED: robust against missing tc_events table / missing columns / permission issues.
+    This prevents the OperationalError from crashing the app.
+    """
+    if not table_exists("tc_events"):
+        return pd.DataFrame(columns=["id", "deviceid", "type", "servertime", "geofenceid", "positionid", "attributes"])
+
+    try:
+        q = (
+            text("""
+                SELECT
+                    id,
+                    deviceid,
+                    type,
+                    servertime,
+                    geofenceid,
+                    positionid,
+                    attributes
+                FROM tc_events
+                WHERE deviceid IN :device_ids
+                  AND servertime >= :start_dt
+                  AND servertime < :end_dt
+                  AND type IN ('geofenceEnter','geofenceExit')
+                ORDER BY servertime DESC
+                LIMIT 500
+            """)
+            .bindparams(bindparam("device_ids", expanding=True))
+        )
+
+        with get_engine().connect() as c:
+            df = pd.read_sql(q, c, params={"device_ids": device_ids, "start_dt": start_dt, "end_dt": end_dt})
+
+        if not df.empty:
+            df["servertime"] = pd.to_datetime(df["servertime"], errors="coerce")
+        return df
+
+    except Exception:
+        # Do NOT crash the app; return empty so UI still works
+        return pd.DataFrame(columns=["id", "deviceid", "type", "servertime", "geofenceid", "positionid", "attributes"])
 
 
 # =============================
-# Charging (no sidebar settings; uses fixed attribute keys)
+# Charging analytics (no sidebar controls)
 # =============================
 def detect_charging_fixed(df: pd.DataFrame, time_col: str):
     """
-    Charging detection keyed by chassis_no via deviceid mapping.
-    Uses fixed attribute keys:
+    Charging detection uses fixed keys from tc_positions.attributes:
       - charging (bool-ish)
-      - batteryLevel (0-100) as SOC
-      - temp1 (numeric)
+    Produces:
+      - per-day: charging_minutes, charges_in_day, avg_daily_hours_of_charge
+      - session timestamps per bike
     """
     if df.empty:
         return pd.DataFrame(), pd.DataFrame()
@@ -317,36 +418,6 @@ with st.sidebar:
         st.stop()
 
     st.divider()
-    st.header("Bike selection (Chassis No.)")
-
-    devices_df = load_devices()
-    if devices_df.empty:
-        st.warning("No devices found in tc_devices.")
-        st.stop()
-
-    devices_df = devices_df.rename(columns={"id": "deviceid", "uniqueid": "chassis_no"})
-
-    # Chassis-only identity in UI (still mapped to deviceid internally)
-    # If duplicate chassis exist, we keep the first mapping.
-    chassis_to_deviceid = {}
-    for _, r in devices_df.iterrows():
-        ch = str(r["chassis_no"]).strip()
-        if ch and ch not in chassis_to_deviceid:
-            chassis_to_deviceid[ch] = int(r["deviceid"])
-
-    chassis_list = sorted(chassis_to_deviceid.keys())
-    if not chassis_list:
-        st.warning("No chassis numbers found in tc_devices.uniqueid.")
-        st.stop()
-
-    selected_chassis = st.multiselect(
-        "Select bikes (chassis number)",
-        options=chassis_list,
-        default=chassis_list[: min(5, len(chassis_list))],
-    )
-    selected_deviceids = [int(chassis_to_deviceid[ch]) for ch in selected_chassis]
-
-    st.divider()
     st.header("Date range")
     today = date.today()
     start_date = st.date_input("Start date", value=today - timedelta(days=7))
@@ -354,6 +425,38 @@ with st.sidebar:
 
     start_dt = datetime.combine(start_date, datetime.min.time())
     end_dt = datetime.combine(end_date + timedelta(days=1), datetime.min.time())
+
+    st.divider()
+    st.header("Bike selection (Chassis No.)")
+
+    # Device ids from tc_positions in the selected date range
+    device_ids_in_range = load_device_ids_seen(start_dt, end_dt)
+    if not device_ids_in_range:
+        st.warning("No devices found in tc_positions for the selected date range.")
+        st.stop()
+
+    chassis_index = load_chassis_index_from_positions(device_ids_in_range, start_dt, end_dt)
+
+    # Filter to chassis starting with LH (as requested)
+    chassis_index["chassis_no"] = chassis_index["chassis_no"].fillna("").astype(str).str.strip()
+    chassis_index = chassis_index[chassis_index["chassis_no"].str.startswith("LH", na=False)].copy()
+
+    if chassis_index.empty:
+        st.warning("No chassis numbers starting with 'LH' were found in tc_positions (attributes) for this date range.")
+        st.stop()
+
+    # Ensure uniqueness
+    chassis_index = chassis_index.drop_duplicates(subset=["chassis_no"]).copy()
+
+    chassis_list = sorted(chassis_index["chassis_no"].tolist())
+    chassis_to_deviceid = dict(zip(chassis_index["chassis_no"], chassis_index["deviceid"]))
+
+    selected_chassis = st.multiselect(
+        "Select bikes (chassis number)",
+        options=chassis_list,
+        default=chassis_list[: min(5, len(chassis_list))],
+    )
+    selected_deviceids = [int(chassis_to_deviceid[ch]) for ch in selected_chassis]
 
 if not selected_deviceids:
     st.info("Select at least one bike.")
@@ -373,14 +476,15 @@ if positions.empty or time_col is None:
 positions = positions.dropna(subset=["latitude", "longitude", time_col]).copy()
 positions = positions.sort_values(["deviceid", time_col]).copy()
 
-# Map deviceid -> chassis_no (primary identity)
-deviceid_to_chassis = dict(zip(devices_df["deviceid"], devices_df["chassis_no"]))
+# Attach chassis_no from the index (positions-first)
+deviceid_to_chassis = dict(zip(chassis_index["deviceid"], chassis_index["chassis_no"]))
 positions["chassis_no"] = positions["deviceid"].map(lambda x: str(deviceid_to_chassis.get(int(x), "")).strip())
 
-# Extract SOC + temp1 from attributes
+# Pull SOC + temp1 from tc_positions.attributes
 positions["soc"] = extract_attr_numeric(positions["attributes"], "batteryLevel")
 positions["temp1"] = extract_attr_numeric(positions["attributes"], "temp1")
 
+# Distances
 positions["prev_lat"] = positions.groupby("deviceid")["latitude"].shift(1)
 positions["prev_lon"] = positions.groupby("deviceid")["longitude"].shift(1)
 
@@ -396,6 +500,8 @@ positions["day"] = positions[time_col].dt.date
 
 # =============================
 # Metrics keyed by chassis number
+# (Removed: Points, deviceid, uniqueid)
+# Avg speed ignores zeros
 # =============================
 per_bike_raw = (
     positions.groupby("deviceid", as_index=False)
@@ -408,7 +514,6 @@ per_bike_raw = (
     )
 )
 
-# Average speed ignoring zeros (per bike)
 avg_speed = (
     positions.groupby("deviceid")["speed_kmh"]
     .apply(mean_ignore_zeros)
@@ -416,7 +521,6 @@ avg_speed = (
 )
 per_bike = per_bike_raw.merge(avg_speed, on="deviceid", how="left")
 
-# Remove internal identifiers from display versions
 per_bike_display = per_bike[["chassis_no", "total_km", "max_kmh", "avg_kmh", "first_time", "last_time"]].copy()
 per_bike_display = per_bike_display.sort_values("chassis_no")
 
@@ -435,54 +539,51 @@ top_cells = (
     .head(50)
 )
 
-
-# =============================
-# Geofence alerts (enter/exit notifications)
-# =============================
-geofence_events = load_geofence_events(selected_deviceids, start_dt, end_dt)
-geofences = load_geofences()
-geofence_id_to_name = dict(zip(geofences.get("id", pd.Series(dtype=int)), geofences.get("name", pd.Series(dtype=str))))
-
-if not geofence_events.empty:
-    geofence_events["chassis_no"] = geofence_events["deviceid"].map(lambda x: str(deviceid_to_chassis.get(int(x), "")).strip())
-    geofence_events["geofence_name"] = geofence_events["geofenceid"].map(lambda x: geofence_id_to_name.get(int(x), f"geofenceid={x}") if pd.notna(x) else "")
-    geofence_events["event"] = geofence_events["type"].map(lambda t: "ENTER" if t == "geofenceEnter" else ("EXIT" if t == "geofenceExit" else t))
-
-    # Toast new events since last run
-    if "last_geofence_event_id" not in st.session_state:
-        st.session_state["last_geofence_event_id"] = None
-
-    last_seen = st.session_state["last_geofence_event_id"]
-    new_events = geofence_events.copy()
-    if last_seen is not None:
-        new_events = new_events[new_events["id"] > last_seen]
-
-    # Update last seen to latest id in this fetch
-    try:
-        st.session_state["last_geofence_event_id"] = int(geofence_events["id"].max())
-    except Exception:
-        pass
-
-    if not new_events.empty:
-        # Show at most 10 toasts to avoid spam
-        for _, r in new_events.sort_values("servertime").tail(10).iterrows():
-            st.toast(f"Geofence {r['event']} | {r['chassis_no']} | {r['geofence_name']}", icon="📍")
-
-
-# =============================
-# Charging analytics (fixed keys, no sidebar controls)
-# =============================
+# Charging summaries (fixed; no sidebar controls shown)
 charge_sessions, charge_daily = detect_charging_fixed(positions, time_col=time_col)
 if not charge_sessions.empty:
     charge_sessions["chassis_no"] = charge_sessions["deviceid"].map(lambda x: str(deviceid_to_chassis.get(int(x), "")).strip())
 if not charge_daily.empty:
     charge_daily["chassis_no"] = charge_daily["deviceid"].map(lambda x: str(deviceid_to_chassis.get(int(x), "")).strip())
 
+# Geofence alerts (robust, won’t crash if tc_events missing)
+geofence_events = load_geofence_events(selected_deviceids, start_dt, end_dt)
+geofences = load_geofences()
+geofence_id_to_name = dict(zip(geofences.get("id", pd.Series(dtype=int)), geofences.get("name", pd.Series(dtype=str))))
+
+if not geofence_events.empty:
+    geofence_events["chassis_no"] = geofence_events["deviceid"].map(lambda x: str(deviceid_to_chassis.get(int(x), "")).strip())
+    geofence_events["geofence_name"] = geofence_events["geofenceid"].map(
+        lambda x: geofence_id_to_name.get(int(x), f"geofenceid={x}") if pd.notna(x) else ""
+    )
+    geofence_events["event"] = geofence_events["type"].map(lambda t: "ENTER" if t == "geofenceEnter" else ("EXIT" if t == "geofenceExit" else t))
+
+    # Notifications (enter/exit)
+    if "last_geofence_event_id" not in st.session_state:
+        st.session_state["last_geofence_event_id"] = None
+
+    last_seen = st.session_state["last_geofence_event_id"]
+    new_events = geofence_events.copy()
+    if last_seen is not None and not new_events.empty:
+        new_events = new_events[new_events["id"] > last_seen]
+
+    try:
+        if not geofence_events.empty:
+            st.session_state["last_geofence_event_id"] = int(pd.to_numeric(geofence_events["id"], errors="coerce").max())
+    except Exception:
+        pass
+
+    if not new_events.empty:
+        for _, r in new_events.sort_values("servertime").tail(10).iterrows():
+            st.toast(f"Geofence {r['event']} | {r['chassis_no']} | {r['geofence_name']}", icon="📍")
+
 
 # =============================
 # Tabs
+# Removed: Trips tab (Trip detection removed)
+# Removed: Daily active bikes from overview
 # =============================
-tab_overview, tab_bike, tab_charging, tab_locations, tab_a_to_b, tab_geofence = st.tabs(
+tab_overview, tab_bike, tab_charging, tab_map, tab_a_to_b, tab_geofence = st.tabs(
     ["Overview", "Bike Metrics", "Charging", "Map", "Distance A → B", "Geofence Alerts"]
 )
 
@@ -535,14 +636,16 @@ with tab_bike:
         st.write(f"{bike_df['speed_kmh'].max():.1f} km/h")
 
 with tab_charging:
-    st.subheader("Daily charging summary (minutes + number of charges + avg daily hours)")
+    st.subheader("Daily charging summary")
+    st.caption("Shown: Daily charging timestamps, number of charges in a day, and average daily hours of charge.")
+
     if charge_daily.empty:
         st.info("No charging detected (attribute 'charging' not found/false in the selected range).")
     else:
         daily_view = charge_daily[["chassis_no", "day", "charging_minutes", "charges_in_day", "avg_daily_hours_of_charge"]].copy()
         st.dataframe(daily_view.sort_values(["chassis_no", "day"]), use_container_width=True)
 
-        st.subheader("Charging sessions (timestamps)")
+        st.subheader("Daily charging timestamps (sessions)")
         sess_view = charge_sessions[["chassis_no", "start_time", "end_time", "duration_min", "samples"]].copy()
         st.dataframe(sess_view.sort_values(["chassis_no", "start_time"]), use_container_width=True)
 
@@ -562,24 +665,24 @@ with tab_charging:
         else:
             st.info("SOC (batteryLevel) not found in attributes for this bike in the selected range.")
 
-with tab_locations:
-    st.subheader("Map: Bike travel paths + popular locations highlighted")
+with tab_map:
+    st.subheader("Map: Full travel paths + all points + popular locations highlighted")
     st.caption(f"Popular locations are based on a rounded grid of {grid_decimals} decimals.")
 
-    # Build paths per bike (plot all points to show travel)
+    # Paths per selected bike (plot traveling)
     path_rows = []
     for did, g in positions.sort_values(time_col).groupby("deviceid"):
         coords = g[["longitude", "latitude"]].dropna().values.tolist()
         if len(coords) >= 2:
-            chassis_no = str(deviceid_to_chassis.get(int(did), "")).strip()
-            path_rows.append({"chassis_no": chassis_no, "path": coords})
+            ch = str(deviceid_to_chassis.get(int(did), "")).strip()
+            path_rows.append({"chassis_no": ch, "path": coords})
 
     paths_df = pd.DataFrame(path_rows)
 
-    # All points (every location)
-    points_df = clean_for_pydeck(positions.rename(columns={"chassis_no": "device_name"}).assign(device_name=positions["chassis_no"]))
+    # Every point (all datapoints)
+    points_df = clean_for_pydeck_points(positions[["latitude", "longitude", "chassis_no", "speed_kmh"]].copy())
 
-    # Highlight popular cells
+    # Hotspots (pinpoint/highlight popular)
     hot = top_cells.copy()
     hot = hot.rename(columns={"cell_lat": "latitude", "cell_lon": "longitude"})
     hot["radius"] = (hot["points"].astype(float).clip(lower=1.0) ** 0.5) * 120.0
@@ -642,7 +745,7 @@ with tab_locations:
             pdk.Deck(
                 layers=layers,
                 initial_view_state=view,
-                tooltip={"text": "{device_name}\nSpeed: {speed_kmh} km/h\n{label}"},
+                tooltip={"text": "{chassis_no}\nSpeed: {speed_kmh} km/h\n{label}"},
             )
         )
 
@@ -702,9 +805,9 @@ with tab_geofence:
     st.caption("Shows events when bikes enter or exit geofences (tc_events type = geofenceEnter/geofenceExit).")
 
     if geofence_events.empty:
-        st.info("No geofence enter/exit events in the selected range.")
+        st.info("No geofence enter/exit events found (or tc_events not available).")
     else:
         view = geofence_events[["servertime", "event", "chassis_no", "geofence_name"]].copy()
         st.dataframe(view.sort_values("servertime", ascending=False), use_container_width=True)
 
-st.caption("✅ Bikes are uniquely identified and shown using chassis number (tc_devices.uniqueid).")
+st.caption("✅ Bikes are identified and displayed using chassis number (prefers tc_positions.attributes; filtered to chassis starting with 'LH').")
