@@ -13,7 +13,7 @@ import pydeck as pdk
 # UI
 # =============================
 st.set_page_config(page_title="🚲 Bike GPS Analytics (Traccar)", layout="wide")
-st.title("🚲 Bike GPS Analytics (Traccar)")
+st.title("🏍️ Bike GPS Analytics (Traccar)")
 st.caption("All metrics are keyed by chassis number (usually starts with 'LH'). Data is primarily sourced from tc_positions.")
 
 
