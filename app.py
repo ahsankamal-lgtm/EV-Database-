@@ -14,7 +14,7 @@ import pydeck as pdk
 # =============================
 st.set_page_config(page_title="🚲 Bike GPS Analytics (Traccar)", layout="wide")
 st.title("🚲 Bike GPS Analytics (Traccar)")
-st.caption("All metrics are keyed by device ID. Data is primarily sourced from tc_positions.")
+st.caption("All metrics are keyed by device ID (tc_positions.deviceid). Data is primarily sourced from tc_positions.")
 
 
 # =============================
@@ -202,6 +202,23 @@ def table_exists(table_name: str) -> bool:
 # =============================
 # DB Loads (positions-first)
 # =============================
+@st.cache_data(ttl=600, show_spinner=False)
+def load_positions_servertime_bounds() -> tuple[datetime | None, datetime | None]:
+    """
+    ✅ FIX: Default date range should be based on REAL data.
+    Your screenshot shows many devicetime/fixtime are 1999-11-30, so we use servertime bounds.
+    """
+    try:
+        with get_engine().connect() as c:
+            r = c.execute(text("SELECT MIN(servertime) AS mn, MAX(servertime) AS mx FROM tc_positions")).mappings().first()
+        mn = pd.to_datetime(r["mn"], errors="coerce")
+        mx = pd.to_datetime(r["mx"], errors="coerce")
+        mn = None if pd.isna(mn) else mn.to_pydatetime()
+        mx = None if pd.isna(mx) else mx.to_pydatetime()
+        return mn, mx
+    except Exception:
+        return None, None
+
 @st.cache_data(ttl=120, show_spinner=True)
 def load_positions(device_ids: list[int], start_dt: datetime, end_dt: datetime) -> pd.DataFrame:
     q = (
@@ -328,9 +345,7 @@ def detect_charging_from_door_drop_incomplete(df: pd.DataFrame, time_col: str):
         g = g.sort_values(time_col).copy()
         isch = g["is_charging"].astype(bool).values
         times = g[time_col].values
-        ids = g["id"].values
 
-        # Find False->True starts and True->False ends
         prev = np.concatenate([[False], isch[:-1]])
         starts = (~prev) & isch
         ends = prev & (~isch)
@@ -338,21 +353,17 @@ def detect_charging_from_door_drop_incomplete(df: pd.DataFrame, time_col: str):
         start_idx = np.where(starts)[0].tolist()
         end_idx = np.where(ends)[0].tolist()
 
-        # Pair each start with the next end AFTER it
         ei = 0
         for si in start_idx:
             while ei < len(end_idx) and end_idx[ei] <= si:
                 ei += 1
             if ei >= len(end_idx):
-                # Incomplete session (no end within range) -> drop
-                break
+                break  # incomplete -> drop
             e = end_idx[ei]
             ei += 1
 
             start_time = pd.to_datetime(times[si])
             end_time = pd.to_datetime(times[e])
-
-            # count samples during charging True block: from start index up to (end index - 1)
             samples = int(max(0, e - si))
 
             sessions_rows.append(
@@ -402,9 +413,20 @@ with st.sidebar:
 
     st.divider()
     st.header("Date range")
-    today = date.today()
-    start_date = st.date_input("Start date", value=today - timedelta(days=7))
-    end_date = st.date_input("End date (inclusive)", value=today)
+
+    mn_dt, mx_dt = load_positions_servertime_bounds()
+    if mx_dt is None:
+        today = date.today()
+        default_end = today
+        default_start = today - timedelta(days=7)
+    else:
+        default_end = mx_dt.date()
+        default_start = (mx_dt - timedelta(days=7)).date()
+        if mn_dt is not None and default_start < mn_dt.date():
+            default_start = mn_dt.date()
+
+    start_date = st.date_input("Start date", value=default_start)
+    end_date = st.date_input("End date (inclusive)", value=default_end)
 
     start_dt = datetime.combine(start_date, datetime.min.time())
     end_dt = datetime.combine(end_date + timedelta(days=1), datetime.min.time())
@@ -421,7 +443,7 @@ with st.sidebar:
     selected_deviceids = st.multiselect(
         "Select bikes (device IDs)",
         options=device_list,
-        default=device_list[: min(5, len(device_list))],  # ✅ at least 5 by default (if available)
+        default=device_list[: min(5, len(device_list))],
     )
 
 if not selected_deviceids:
@@ -443,7 +465,10 @@ positions = positions.dropna(subset=["latitude", "longitude", time_col]).copy()
 positions = positions.sort_values(["deviceid", time_col]).copy()
 
 # Pull fuel1 (SOC graph) + temp1 from tc_positions.attributes
-positions["fuel1"] = extract_attr_numeric_first(positions["attributes"], keys=["fuel1", "fuel 1", "fuel_1", "Fuel1", "Fuel 1", "Fuel_1"])
+positions["fuel1"] = extract_attr_numeric_first(
+    positions["attributes"],
+    keys=["fuel1", "fuel 1", "fuel_1", "Fuel1", "Fuel 1", "Fuel_1"]
+)
 positions["temp1"] = extract_attr_numeric(positions["attributes"], "temp1")
 
 # Distances
@@ -535,8 +560,6 @@ if not geofence_events.empty:
 
 # =============================
 # Tabs
-# ✅ Remove Distance A → B tab
-# ✅ Add multi-bike charts on same graph (speed, temp1, daily distance)
 # =============================
 tab_overview, tab_bike, tab_charging, tab_map, tab_geofence = st.tabs(
     ["Overview", "Bike Metrics", "Charging", "Map", "Geofence Alerts"]
@@ -557,7 +580,6 @@ with tab_bike:
     st.subheader("Per-bike metrics (keyed by deviceid)")
     st.dataframe(per_bike_display, use_container_width=True)
 
-    # ✅ NEW: multi-bike plots (up to at least 5 selected)
     st.subheader("Multi-bike comparison (Speed, Temp1, Daily Distance)")
     st.caption("Shows selected bikes on the same chart, clearly labeled by device ID.")
 
@@ -567,29 +589,18 @@ with tab_bike:
     else:
         df_sel = positions[positions["deviceid"].isin(deviceids_selected_now)].copy()
 
-        # --- Speed overlay ---
-        speed_wide = (
-            df_sel[["deviceid", time_col, "speed_kmh"]]
-            .dropna(subset=[time_col])
-            .copy()
-        )
+        speed_wide = df_sel[["deviceid", time_col, "speed_kmh"]].dropna(subset=[time_col]).copy()
         speed_wide["deviceid"] = speed_wide["deviceid"].astype(int).astype(str)
         speed_pivot = speed_wide.pivot_table(index=time_col, columns="deviceid", values="speed_kmh", aggfunc="mean").sort_index()
         st.markdown("**Speed over time (km/h)**")
         st.line_chart(speed_pivot)
 
-        # --- Temp1 overlay ---
-        temp_wide = (
-            df_sel[["deviceid", time_col, "temp1"]]
-            .dropna(subset=[time_col])
-            .copy()
-        )
+        temp_wide = df_sel[["deviceid", time_col, "temp1"]].dropna(subset=[time_col]).copy()
         temp_wide["deviceid"] = temp_wide["deviceid"].astype(int).astype(str)
         temp_pivot = temp_wide.pivot_table(index=time_col, columns="deviceid", values="temp1", aggfunc="mean").sort_index()
         st.markdown("**Temp1 over time**")
         st.line_chart(temp_pivot)
 
-        # --- Daily distance overlay ---
         daily = (
             df_sel.groupby(["deviceid", "day"], as_index=False)["seg_km"]
             .sum()
@@ -666,7 +677,6 @@ with tab_map:
             )
         )
 
-    # hotspots with a visible fill color (not black) + outline for clarity
     if not hot.empty:
         layers.append(
             pdk.Layer(
@@ -674,8 +684,8 @@ with tab_map:
                 data=hot,
                 get_position="[longitude, latitude]",
                 get_radius="radius",
-                get_fill_color="[255, 99, 71, 170]",   # tomato-ish, visible on dark map
-                get_line_color="[255, 255, 255, 220]", # white outline
+                get_fill_color="[255, 99, 71, 170]",
+                get_line_color="[255, 255, 255, 220]",
                 line_width_min_pixels=1,
                 pickable=True,
             )
@@ -719,4 +729,4 @@ with tab_geofence:
         view = geofence_events[["servertime", "event", "deviceid", "geofence_name"]].copy()
         st.dataframe(view.sort_values("servertime", ascending=False), use_container_width=True)
 
-st.caption("✅ Bike selection and all analytics are keyed by device IDs from tc_positions.deviceid. SOC graph uses Fuel 1 from tc_positions.attributes. Charging sessions use attributes['door'] and drop incomplete sessions.")
+st.caption("✅ Device ID column is tc_positions.deviceid. Date range defaults to the latest servertime data in tc_positions.")
