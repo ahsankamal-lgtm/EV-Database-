@@ -14,7 +14,7 @@ import pydeck as pdk
 # =============================
 st.set_page_config(page_title="🚲 Bike GPS Analytics (Traccar)", layout="wide")
 st.title("🏍️ Bike GPS Analytics (Traccar)")
-st.caption("All metrics are keyed by chassis number. Data is primarily sourced from tc_positions.")
+st.caption("All metrics are keyed by chassis number (tc_devices.name). Data is primarily sourced from tc_positions.")
 
 
 # =============================
@@ -98,13 +98,6 @@ def clean_for_pydeck_points(df: pd.DataFrame) -> pd.DataFrame:
     out = out.replace([np.inf, -np.inf], None)
     return out
 
-def clamp_dt(x: datetime, lo: datetime, hi: datetime) -> datetime:
-    if x < lo:
-        return lo
-    if x > hi:
-        return hi
-    return x
-
 def mean_ignore_zeros(s: pd.Series) -> float:
     s = pd.to_numeric(s, errors="coerce")
     s = s[s > 0]
@@ -145,7 +138,7 @@ HOST = cfg["host"]
 PORT = int(cfg["port"])
 USER = cfg["user"]
 PASSWORD = cfg["password"]
-DB_NAME = cfg["database"]  # should be traccar_new
+DB_NAME = cfg["database"]  # e.g. traccar_new
 
 
 # =============================
@@ -247,8 +240,8 @@ def load_device_ids_seen(start_dt: datetime, end_dt: datetime) -> list[int]:
 @st.cache_data(ttl=120, show_spinner=False)
 def load_chassis_index_from_tc_devices(device_ids: list[int]) -> pd.DataFrame:
     """
-    ✅ SOURCE OF TRUTH:
-    Chassis number = tc_devices.name
+    ✅ REQUIRED FIX:
+    Use tc_devices.name as the unique identifier (chassis number).
     """
     if not table_exists("tc_devices"):
         return pd.DataFrame(columns=["deviceid", "chassis_no"])
@@ -317,8 +310,8 @@ def load_geofence_events(device_ids: list[int], start_dt: datetime, end_dt: date
 
 # =============================
 # Charging analytics (no sidebar controls)
-# ✅ CHANGED: door=True means charging
-# ✅ CHANGED: SOC is Fuel 1
+# ✅ door=True means charging
+# ✅ SOC uses Fuel 1
 # =============================
 def detect_charging_fixed(df: pd.DataFrame, time_col: str):
     if df.empty:
@@ -390,13 +383,13 @@ with st.sidebar:
         st.warning("No devices found in tc_positions for the selected date range.")
         st.stop()
 
-    # ✅ FIX: get chassis from tc_devices.name
+    # ✅ chassis from tc_devices.name (your screenshot)
     chassis_index = load_chassis_index_from_tc_devices(device_ids_in_range)
 
     chassis_index["chassis_no"] = chassis_index["chassis_no"].fillna("").astype(str).str.strip()
-    chassis_index["chassis_no_norm"] = chassis_index["chassis_no"].str.upper().str.strip()
+    chassis_index["chassis_no_norm"] = chassis_index["chassis_no"].str.strip()
 
-    # ✅ CHANGED: show ALL chassis numbers (not only those starting with LH)
+    # ✅ show ALL chassis numbers (no LH filtering)
     preferred = chassis_index[chassis_index["chassis_no_norm"] != ""].copy()
     preferred = preferred.drop_duplicates(subset=["chassis_no_norm"]).copy()
 
@@ -410,9 +403,9 @@ with st.sidebar:
     selected_chassis = st.multiselect(
         "Select bikes (chassis number)",
         options=chassis_list,
-        default=chassis_list[: min(5, len(chassis_list))],  # at least 5 by default (if available)
+        default=chassis_list[: min(5, len(chassis_list))],
     )
-    selected_deviceids = [int(chassis_to_deviceid[ch]) for ch in selected_chassis]
+    selected_deviceids = [int(chassis_to_deviceid[ch]) for ch in selected_chassis if ch in chassis_to_deviceid]
 
 if not selected_deviceids:
     st.info("Select at least one bike.")
@@ -436,11 +429,10 @@ positions = positions.sort_values(["deviceid", time_col]).copy()
 deviceid_to_chassis = dict(zip(preferred["deviceid"], preferred["chassis_no"]))
 positions["chassis_no"] = positions["deviceid"].map(lambda x: str(deviceid_to_chassis.get(int(x), "")).strip())
 
-# Pull SOC + temp1 from tc_positions.attributes (kept)
-positions["soc"] = extract_attr_numeric(positions["attributes"], "batteryLevel")
+# Pull temp1 from tc_positions.attributes (kept)
 positions["temp1"] = extract_attr_numeric(positions["attributes"], "temp1")
 
-# ✅ Fuel 1 for Charging tab SOC (robust key scan)
+# ✅ Battery SOC for Charging tab: Fuel 1 (robust key scan)
 positions["fuel1"] = extract_attr_numeric_multi(
     positions["attributes"],
     keys=["fuel1", "fuel_1", "fuel 1", "fuel", "Fuel1", "Fuel", "fuelLevel", "fuellevel"]
@@ -507,10 +499,10 @@ if not charge_sessions.empty:
 if not charge_daily.empty:
     charge_daily["chassis_no"] = charge_daily["deviceid"].map(lambda x: str(deviceid_to_chassis.get(int(x), "")).strip())
 
-# Geofence alerts (robust)
+# Geofence alerts
 geofence_events = load_geofence_events(selected_deviceids, start_dt, end_dt)
 geofences = load_geofences()
-geofence_id_to_name = dict(zip(geofences.get("id", pd.Series(dtype=int)), geofa:=geofences.get("name", pd.Series(dtype=str))))
+geofence_id_to_name = dict(zip(geofences.get("id", pd.Series(dtype=int)), geofences.get("name", pd.Series(dtype=str))))
 
 if not geofence_events.empty:
     geofence_events["chassis_no"] = geofence_events["deviceid"].map(lambda x: str(deviceid_to_chassis.get(int(x), "")).strip())
@@ -720,4 +712,4 @@ with tab_geofence:
         view = geofence_events[["servertime", "event", "chassis_no", "geofence_name"]].copy()
         st.dataframe(view.sort_values("servertime", ascending=False), use_container_width=True)
 
-st.caption("✅ Bike selection uses chassis numbers from tc_devices.name (all chassis numbers are shown).")
+st.caption("✅ Device unique identifier used in the UI and metrics: tc_devices.name (chassis number).")
