@@ -101,13 +101,6 @@ def clean_for_pydeck_points(df: pd.DataFrame) -> pd.DataFrame:
     out = out.replace([np.inf, -np.inf], None)
     return out
 
-def clamp_dt(x: datetime, lo: datetime, hi: datetime) -> datetime:
-    if x < lo:
-        return lo
-    if x > hi:
-        return hi
-    return x
-
 def mean_ignore_zeros(s: pd.Series) -> float:
     s = pd.to_numeric(s, errors="coerce")
     s = s[s > 0]
@@ -200,7 +193,7 @@ def table_exists(table_name: str) -> bool:
 
 
 # =============================
-# DB Loads (FAST sidebar: tc_devices for device list)
+# DB Loads (FAST sidebar)
 # =============================
 @st.cache_data(ttl=600, show_spinner=False)
 def load_all_device_ids_from_tc_devices() -> list[int]:
@@ -213,11 +206,29 @@ def load_all_device_ids_from_tc_devices() -> list[int]:
     except Exception:
         return []
 
+@st.cache_data(ttl=600, show_spinner=False)
+def load_positions_servertime_bounds() -> tuple[datetime | None, datetime | None]:
+    """
+    Used only to pick a sensible DEFAULT day (latest available servertime),
+    not to force a range UI.
+    """
+    if not table_exists("tc_positions"):
+        return None, None
+    try:
+        with get_engine().connect() as c:
+            r = c.execute(text("SELECT MIN(servertime) AS mn, MAX(servertime) AS mx FROM tc_positions")).mappings().first()
+        mn = pd.to_datetime(r["mn"], errors="coerce")
+        mx = pd.to_datetime(r["mx"], errors="coerce")
+        mn = None if pd.isna(mn) else mn.to_pydatetime()
+        mx = None if pd.isna(mx) else mx.to_pydatetime()
+        return mn, mx
+    except Exception:
+        return None, None
+
 @st.cache_data(ttl=120, show_spinner=True)
 def load_positions(device_ids: list[int], start_dt: datetime, end_dt: datetime) -> pd.DataFrame:
     """
-    ✅ FIX: Filter by servertime only (your screenshot shows servertime is real;
-    devicetime/fixtime can be invalid like 1999-11-30).
+    Filter by servertime only (fixtime/devicetime can be invalid in your DB).
     """
     q = (
         text("""
@@ -381,7 +392,7 @@ def detect_charging_from_door_drop_incomplete(df: pd.DataFrame, time_col: str):
 
 
 # =============================
-# Sidebar
+# Sidebar (ONE DAY ONLY)
 # =============================
 with st.sidebar:
     st.header("Connection")
@@ -397,14 +408,18 @@ with st.sidebar:
         st.stop()
 
     st.divider()
-    st.header("Date range")
+    st.header("Date (single day)")
 
-    today = date.today()
-    start_date = st.date_input("Start date", value=today - timedelta(days=7))
-    end_date = st.date_input("End date (inclusive)", value=today)
+    mn_dt, mx_dt = load_positions_servertime_bounds()
+    if mx_dt is not None:
+        default_day = mx_dt.date()
+    else:
+        default_day = date.today()
 
-    start_dt = datetime.combine(start_date, datetime.min.time())
-    end_dt = datetime.combine(end_date + timedelta(days=1), datetime.min.time())
+    selected_day = st.date_input("Select day", value=default_day)
+
+    start_dt = datetime.combine(selected_day, datetime.min.time())
+    end_dt = start_dt + timedelta(days=1)
 
     st.divider()
     st.header("Bike selection (Device IDs)")
@@ -432,7 +447,7 @@ positions = load_positions([int(x) for x in selected_deviceids], start_dt, end_d
 time_col = pick_time_field(positions)
 
 if positions.empty or time_col is None:
-    st.warning("No position data found for the selected bikes/date range.")
+    st.warning("No position data found for the selected bikes on the selected day.")
     st.stop()
 
 positions = positions.dropna(subset=["latitude", "longitude", time_col]).copy()
@@ -441,7 +456,7 @@ positions = positions.sort_values(["deviceid", time_col]).copy()
 # Pull fuel1 (SOC graph) + temp1 from tc_positions.attributes
 positions["fuel1"] = extract_attr_numeric_first(
     positions["attributes"],
-    keys=["fuel1", "fuel 1", "fuel_1", "Fuel1", "Fuel 1", "Fuel_1"]
+    keys=["fuel1", "fuel 1", "fuel_1", "Fuel1", "Fuel 1", "Fuel_1"],
 )
 positions["temp1"] = extract_attr_numeric(positions["attributes"], "temp1")
 
@@ -511,7 +526,9 @@ if not geofence_events.empty:
     geofence_events["geofence_name"] = geofence_events["geofenceid"].map(
         lambda x: geofence_id_to_name.get(int(x), f"geofenceid={x}") if pd.notna(x) else ""
     )
-    geofence_events["event"] = geofence_events["type"].map(lambda t: "ENTER" if t == "geofenceEnter" else ("EXIT" if t == "geofenceExit" else t))
+    geofence_events["event"] = geofence_events["type"].map(
+        lambda t: "ENTER" if t == "geofenceEnter" else ("EXIT" if t == "geofenceExit" else t)
+    )
 
     if "last_geofence_event_id" not in st.session_state:
         st.session_state["last_geofence_event_id"] = None
@@ -590,7 +607,7 @@ with tab_charging:
     st.caption("Charging is determined from attributes['door'] (True = charging, False = not charging). Incomplete sessions are dropped.")
 
     if charge_daily.empty:
-        st.info("No charging detected (attribute 'door' not found/false in the selected range, or sessions were incomplete and dropped).")
+        st.info("No charging detected (attribute 'door' not found/false in the selected day, or sessions were incomplete and dropped).")
     else:
         daily_view = charge_daily[["deviceid", "day", "charging_minutes", "charges_in_day", "avg_daily_hours_of_charge"]].copy()
         st.dataframe(daily_view.sort_values(["deviceid", "day"]), use_container_width=True)
@@ -602,7 +619,7 @@ with tab_charging:
     st.subheader("SOC graph (multi-bike)")
     df_sel = positions[positions["deviceid"].isin([int(x) for x in selected_deviceids])].copy()
     if df_sel.empty or not df_sel["fuel1"].notna().any():
-        st.info("Fuel 1 not found in attributes for the selected bikes in the selected range.")
+        st.info("Fuel 1 not found in attributes for the selected bikes on the selected day.")
     else:
         soc_pivot = df_sel.pivot_table(index=time_col, columns="deviceid", values="fuel1", aggfunc="mean").sort_index()
         soc_pivot.columns = soc_pivot.columns.astype(int).astype(str)
@@ -698,9 +715,9 @@ with tab_geofence:
     st.caption("Shows events when bikes enter or exit geofences (tc_events type = geofenceEnter/geofenceExit).")
 
     if geofence_events.empty:
-        st.info("No geofence enter/exit events found (or tc_events not available).")
+        st.info("No geofence enter/exit events found (or tc_events not available) for the selected day.")
     else:
         view = geofence_events[["servertime", "event", "deviceid", "geofence_name"]].copy()
         st.dataframe(view.sort_values("servertime", ascending=False), use_container_width=True)
 
-st.caption("✅ Device ID column is tc_positions.deviceid. Device list loads from tc_devices for fast startup. Positions are filtered by servertime for accuracy and speed.")
+st.caption("✅ Single-day mode enabled: you can only select ONE day. Data is filtered using tc_positions.servertime.")
