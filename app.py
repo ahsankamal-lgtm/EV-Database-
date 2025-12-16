@@ -222,9 +222,9 @@ def load_positions(device_ids: list[int], start_dt: datetime, end_dt: datetime) 
                 attributes
             FROM tc_positions
             WHERE deviceid IN :device_ids
-              AND fixtime >= :start_dt
-              AND fixtime < :end_dt
-            ORDER BY deviceid, fixtime
+              AND COALESCE(fixtime, devicetime, servertime) >= :start_dt
+              AND COALESCE(fixtime, devicetime, servertime) < :end_dt
+            ORDER BY deviceid, COALESCE(fixtime, devicetime, servertime)
         """)
         .bindparams(bindparam("device_ids", expanding=True))
     )
@@ -243,7 +243,8 @@ def load_device_ids_seen(start_dt: datetime, end_dt: datetime) -> list[int]:
     q = text("""
         SELECT DISTINCT deviceid
         FROM tc_positions
-        WHERE fixtime >= :start_dt AND fixtime < :end_dt
+        WHERE COALESCE(fixtime, devicetime, servertime) >= :start_dt
+          AND COALESCE(fixtime, devicetime, servertime) < :end_dt
         ORDER BY deviceid
     """)
     with get_engine().connect() as c:
