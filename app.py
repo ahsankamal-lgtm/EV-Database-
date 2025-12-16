@@ -14,7 +14,7 @@ import pydeck as pdk
 # =============================
 st.set_page_config(page_title="🚲 Bike GPS Analytics (Traccar)", layout="wide")
 st.title("🏍️ Bike GPS Analytics (Traccar)")
-st.caption("All metrics are keyed by chassis number (usually starts with 'LH'). Data is primarily sourced from tc_positions.")
+st.caption("All metrics are keyed by chassis number. Data is primarily sourced from tc_positions.")
 
 
 # =============================
@@ -115,8 +115,20 @@ def extract_attr_numeric(series_attrs: pd.Series, key: str) -> pd.Series:
     out = attrs.apply(lambda a: a.get(key, None))
     return pd.to_numeric(out, errors="coerce")
 
+# ✅ NEW: get "fuel 1" SOC robustly (tries multiple likely keys)
+def extract_attr_numeric_multi(series_attrs: pd.Series, keys: list[str]) -> pd.Series:
+    attrs = series_attrs.apply(safe_json)
+
+    def pick(a: dict):
+        for k in keys:
+            if k in a and a.get(k, None) is not None:
+                return a.get(k, None)
+        return None
+
+    out = attrs.apply(pick)
+    return pd.to_numeric(out, errors="coerce")
+
 def pick_chassis_from_attrs(attrs_dict: dict) -> str:
-    # Try common keys (extend if needed)
     keys = ["chassis", "chassisNo", "chassis_no", "chassisNumber", "vin", "VIN", "vehicleVin", "uniqueid", "uniqueId"]
     for k in keys:
         v = attrs_dict.get(k, None)
@@ -247,7 +259,7 @@ def load_device_ids_seen(start_dt: datetime, end_dt: datetime) -> list[int]:
 @st.cache_data(ttl=120, show_spinner=False)
 def load_chassis_index_from_tc_devices(device_ids: list[int]) -> pd.DataFrame:
     """
-    ✅ FIX: Chassis is stored in tc_devices.name (as per your screenshot), not in tc_positions.attributes.
+    Chassis is stored in tc_devices.name (as per your screenshot).
     """
     if not table_exists("tc_devices"):
         return pd.DataFrame(columns=["deviceid", "chassis_no"])
@@ -316,7 +328,10 @@ def load_geofence_events(device_ids: list[int], start_dt: datetime, end_dt: date
 
 
 # =============================
-# Charging analytics (no sidebar controls)
+# Charging analytics (CHANGED per your rules)
+# - SOC is "fuel 1"
+# - Charging status is "door" boolean (True=charging, False=not)
+# - First True -> first False = 1 charge session
 # =============================
 def detect_charging_fixed(df: pd.DataFrame, time_col: str):
     if df.empty:
@@ -325,10 +340,13 @@ def detect_charging_fixed(df: pd.DataFrame, time_col: str):
     d = df.sort_values(["deviceid", time_col]).copy()
     attrs = d["attributes"].apply(safe_json)
 
-    raw = attrs.apply(lambda a: a.get("charging", None))
-    d["is_charging"] = raw.apply(lambda v: bool(v) if v is not None else False)
+    # ✅ door True => charging
+    door = attrs.apply(lambda a: a.get("door", None))
+    d["is_charging"] = door.apply(lambda v: bool(v) if v is not None else False)
 
     d["prev_charge"] = d.groupby("deviceid")["is_charging"].shift(1)
+
+    # charge session starts at first True after False
     d["charge_start"] = (d["is_charging"] == True) & (d["prev_charge"] == False)
     d["charge_session_id"] = d["charge_start"].groupby(d["deviceid"]).cumsum()
 
@@ -387,16 +405,14 @@ with st.sidebar:
         st.warning("No devices found in tc_positions for the selected date range.")
         st.stop()
 
-    # ✅ FIX: get chassis from tc_devices.name
+    # chassis from tc_devices.name
     chassis_index = load_chassis_index_from_tc_devices(device_ids_in_range)
 
     chassis_index["chassis_no"] = chassis_index["chassis_no"].fillna("").astype(str).str.strip()
     chassis_index["chassis_no_norm"] = chassis_index["chassis_no"].str.upper().str.strip()
 
-    preferred = chassis_index[chassis_index["chassis_no_norm"].str.startswith("LH", na=False)].copy()
-    if preferred.empty:
-        preferred = chassis_index[chassis_index["chassis_no_norm"] != ""].copy()
-
+    # ✅ CHANGED: show ALL chassis numbers (not only those starting with LH)
+    preferred = chassis_index[chassis_index["chassis_no_norm"] != ""].copy()
     preferred = preferred.drop_duplicates(subset=["chassis_no_norm"]).copy()
 
     if preferred.empty:
@@ -409,7 +425,7 @@ with st.sidebar:
     selected_chassis = st.multiselect(
         "Select bikes (chassis number)",
         options=chassis_list,
-        default=chassis_list[: min(5, len(chassis_list))],  # ✅ at least 5 by default (if available)
+        default=chassis_list[: min(5, len(chassis_list))],
     )
     selected_deviceids = [int(chassis_to_deviceid[ch]) for ch in selected_chassis]
 
@@ -435,9 +451,16 @@ positions = positions.sort_values(["deviceid", time_col]).copy()
 deviceid_to_chassis = dict(zip(preferred["deviceid"], preferred["chassis_no"]))
 positions["chassis_no"] = positions["deviceid"].map(lambda x: str(deviceid_to_chassis.get(int(x), "")).strip())
 
-# Pull SOC + temp1 from tc_positions.attributes
+# SOC for other tabs (kept as-is)
 positions["soc"] = extract_attr_numeric(positions["attributes"], "batteryLevel")
 positions["temp1"] = extract_attr_numeric(positions["attributes"], "temp1")
+
+# ✅ NEW: Battery SOC for Charging tab is "fuel 1"
+# (tries common key variants)
+positions["fuel1"] = extract_attr_numeric_multi(
+    positions["attributes"],
+    keys=["fuel1", "fuel_1", "fuel", "Fuel1", "Fuel", "fuelLevel", "fuellevel"]
+)
 
 # Distances
 positions["prev_lat"] = positions.groupby("deviceid")["latitude"].shift(1)
@@ -493,7 +516,7 @@ top_cells = (
     .head(50)
 )
 
-# Charging summaries
+# Charging summaries (updated logic)
 charge_sessions, charge_daily = detect_charging_fixed(positions, time_col=time_col)
 if not charge_sessions.empty:
     charge_sessions["chassis_no"] = charge_sessions["deviceid"].map(lambda x: str(deviceid_to_chassis.get(int(x), "")).strip())
@@ -533,8 +556,6 @@ if not geofence_events.empty:
 
 # =============================
 # Tabs
-# ✅ Remove Distance A → B tab
-# ✅ Add multi-bike charts on same graph (speed, temp1, daily distance)
 # =============================
 tab_overview, tab_bike, tab_charging, tab_map, tab_geofence = st.tabs(
     ["Overview", "Bike Metrics", "Charging", "Map", "Geofence Alerts"]
@@ -555,19 +576,16 @@ with tab_bike:
     st.subheader("Per-bike metrics (keyed by chassis number)")
     st.dataframe(per_bike_display, use_container_width=True)
 
-    # ✅ NEW: multi-bike plots (up to at least 5 selected)
     st.subheader("Multi-bike comparison (Speed, Temp1, Daily Distance)")
     st.caption("Shows selected bikes on the same chart, clearly labeled by chassis number.")
 
-    # Build a consistent time index (minute-level) and merge series per bike for clearer overlay
-    bikes_selected_now = selected_chassis[:]  # already multiselect in sidebar
+    bikes_selected_now = selected_chassis[:]
     if not bikes_selected_now:
         st.info("Select bikes from the sidebar to view comparison charts.")
     else:
         sel_deviceids_now = [int(chassis_to_deviceid[ch]) for ch in bikes_selected_now if ch in chassis_to_deviceid]
         df_sel = positions[positions["deviceid"].isin(sel_deviceids_now)].copy()
 
-        # --- Speed overlay ---
         speed_wide = (
             df_sel[["deviceid", "chassis_no", time_col, "speed_kmh"]]
             .dropna(subset=[time_col])
@@ -578,7 +596,6 @@ with tab_bike:
         st.markdown("**Speed over time (km/h)**")
         st.line_chart(speed_pivot)
 
-        # --- Temp1 overlay ---
         temp_wide = (
             df_sel[["deviceid", "chassis_no", time_col, "temp1"]]
             .dropna(subset=[time_col])
@@ -589,7 +606,6 @@ with tab_bike:
         st.markdown("**Temp1 over time**")
         st.line_chart(temp_pivot)
 
-        # --- Daily distance overlay ---
         daily = (
             df_sel.groupby(["chassis_no", "day"], as_index=False)["seg_km"]
             .sum()
@@ -600,11 +616,12 @@ with tab_bike:
         st.line_chart(dist_pivot)
 
 with tab_charging:
-    st.subheader("Daily charging summary")
-    st.caption("Shown: Daily charging timestamps, number of charges in a day, and average daily hours of charge.")
+    # ✅ CHANGED per your request
+    st.subheader("Daily charging summary (door=True means charging)")
+    st.caption("Daily timestamps are based on door=True sessions (first True → first False = 1 charge). SOC graph uses Fuel 1.")
 
     if charge_daily.empty:
-        st.info("No charging detected (attribute 'charging' not found/false in the selected range).")
+        st.info("No charging detected (attribute 'door' not found/false in the selected range).")
     else:
         daily_view = charge_daily[["chassis_no", "day", "charging_minutes", "charges_in_day", "avg_daily_hours_of_charge"]].copy()
         st.dataframe(daily_view.sort_values(["chassis_no", "day"]), use_container_width=True)
@@ -613,13 +630,13 @@ with tab_charging:
         sess_view = charge_sessions[["chassis_no", "start_time", "end_time", "duration_min", "samples"]].copy()
         st.dataframe(sess_view.sort_values(["chassis_no", "start_time"]), use_container_width=True)
 
-    st.subheader("SOC graph (multi-bike)")
+    st.subheader("Battery SOC (Fuel 1) graph (multi-bike)")
     df_sel = positions[positions["chassis_no"].isin(selected_chassis)].copy()
-    if df_sel.empty or not df_sel["soc"].notna().any():
-        st.info("SOC (batteryLevel) not found in attributes for the selected bikes in the selected range.")
+    if df_sel.empty or not df_sel["fuel1"].notna().any():
+        st.info("Fuel 1 not found in attributes for the selected bikes in the selected range.")
     else:
-        soc_pivot = df_sel.pivot_table(index=time_col, columns="chassis_no", values="soc", aggfunc="mean").sort_index()
-        st.line_chart(soc_pivot)
+        fuel_pivot = df_sel.pivot_table(index=time_col, columns="chassis_no", values="fuel1", aggfunc="mean").sort_index()
+        st.line_chart(fuel_pivot)
 
 with tab_map:
     st.subheader("Map: Full travel paths + all points + popular locations highlighted")
@@ -665,7 +682,6 @@ with tab_map:
             )
         )
 
-    # ✅ FIX: hotspots with a visible fill color (not black) + outline for clarity
     if not hot.empty:
         layers.append(
             pdk.Layer(
@@ -673,8 +689,8 @@ with tab_map:
                 data=hot,
                 get_position="[longitude, latitude]",
                 get_radius="radius",
-                get_fill_color="[255, 99, 71, 170]",   # tomato-ish, visible on dark map
-                get_line_color="[255, 255, 255, 220]", # white outline
+                get_fill_color="[255, 99, 71, 170]",
+                get_line_color="[255, 255, 255, 220]",
                 line_width_min_pixels=1,
                 pickable=True,
             )
@@ -718,4 +734,4 @@ with tab_geofence:
         view = geofence_events[["servertime", "event", "chassis_no", "geofence_name"]].copy()
         st.dataframe(view.sort_values("servertime", ascending=False), use_container_width=True)
 
-st.caption("✅ Bike selection uses chassis numbers from tc_devices.name (as per your schema screenshot) and prefers those starting with 'LH'.")
+st.caption("✅ Bike selection uses chassis numbers from tc_devices.name (all chassis numbers are shown).")
