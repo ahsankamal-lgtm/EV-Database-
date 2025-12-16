@@ -200,27 +200,25 @@ def table_exists(table_name: str) -> bool:
 
 
 # =============================
-# DB Loads (positions-first)
+# DB Loads (FAST sidebar: tc_devices for device list)
 # =============================
 @st.cache_data(ttl=600, show_spinner=False)
-def load_positions_servertime_bounds() -> tuple[datetime | None, datetime | None]:
-    """
-    ✅ FIX: Default date range should be based on REAL data.
-    Your screenshot shows many devicetime/fixtime are 1999-11-30, so we use servertime bounds.
-    """
+def load_all_device_ids_from_tc_devices() -> list[int]:
+    if not table_exists("tc_devices"):
+        return []
     try:
         with get_engine().connect() as c:
-            r = c.execute(text("SELECT MIN(servertime) AS mn, MAX(servertime) AS mx FROM tc_positions")).mappings().first()
-        mn = pd.to_datetime(r["mn"], errors="coerce")
-        mx = pd.to_datetime(r["mx"], errors="coerce")
-        mn = None if pd.isna(mn) else mn.to_pydatetime()
-        mx = None if pd.isna(mx) else mx.to_pydatetime()
-        return mn, mx
+            rows = c.execute(text("SELECT id FROM tc_devices ORDER BY id")).fetchall()
+        return [int(r[0]) for r in rows]
     except Exception:
-        return None, None
+        return []
 
 @st.cache_data(ttl=120, show_spinner=True)
 def load_positions(device_ids: list[int], start_dt: datetime, end_dt: datetime) -> pd.DataFrame:
+    """
+    ✅ FIX: Filter by servertime only (your screenshot shows servertime is real;
+    devicetime/fixtime can be invalid like 1999-11-30).
+    """
     q = (
         text("""
             SELECT
@@ -239,9 +237,9 @@ def load_positions(device_ids: list[int], start_dt: datetime, end_dt: datetime) 
                 attributes
             FROM tc_positions
             WHERE deviceid IN :device_ids
-              AND COALESCE(fixtime, devicetime, servertime) >= :start_dt
-              AND COALESCE(fixtime, devicetime, servertime) < :end_dt
-            ORDER BY deviceid, COALESCE(fixtime, devicetime, servertime)
+              AND servertime >= :start_dt
+              AND servertime < :end_dt
+            ORDER BY deviceid, servertime
         """)
         .bindparams(bindparam("device_ids", expanding=True))
     )
@@ -254,19 +252,6 @@ def load_positions(device_ids: list[int], start_dt: datetime, end_dt: datetime) 
 
     df["speed_kmh"] = pd.to_numeric(df["speed"], errors="coerce").fillna(0.0).apply(knots_to_kmh)
     return df
-
-@st.cache_data(ttl=120, show_spinner=False)
-def load_device_ids_seen(start_dt: datetime, end_dt: datetime) -> list[int]:
-    q = text("""
-        SELECT DISTINCT deviceid
-        FROM tc_positions
-        WHERE COALESCE(fixtime, devicetime, servertime) >= :start_dt
-          AND COALESCE(fixtime, devicetime, servertime) < :end_dt
-        ORDER BY deviceid
-    """)
-    with get_engine().connect() as c:
-        rows = c.execute(q, {"start_dt": start_dt, "end_dt": end_dt}).fetchall()
-    return [int(r[0]) for r in rows]
 
 @st.cache_data(ttl=120, show_spinner=False)
 def load_geofences():
@@ -414,19 +399,9 @@ with st.sidebar:
     st.divider()
     st.header("Date range")
 
-    mn_dt, mx_dt = load_positions_servertime_bounds()
-    if mx_dt is None:
-        today = date.today()
-        default_end = today
-        default_start = today - timedelta(days=7)
-    else:
-        default_end = mx_dt.date()
-        default_start = (mx_dt - timedelta(days=7)).date()
-        if mn_dt is not None and default_start < mn_dt.date():
-            default_start = mn_dt.date()
-
-    start_date = st.date_input("Start date", value=default_start)
-    end_date = st.date_input("End date (inclusive)", value=default_end)
+    today = date.today()
+    start_date = st.date_input("Start date", value=today - timedelta(days=7))
+    end_date = st.date_input("End date (inclusive)", value=today)
 
     start_dt = datetime.combine(start_date, datetime.min.time())
     end_dt = datetime.combine(end_date + timedelta(days=1), datetime.min.time())
@@ -434,12 +409,11 @@ with st.sidebar:
     st.divider()
     st.header("Bike selection (Device IDs)")
 
-    device_ids_in_range = load_device_ids_seen(start_dt, end_dt)
-    if not device_ids_in_range:
-        st.warning("No devices found in tc_positions for the selected date range.")
+    device_list = load_all_device_ids_from_tc_devices()
+    if not device_list:
+        st.warning("No devices found in tc_devices.")
         st.stop()
 
-    device_list = device_ids_in_range[:]
     selected_deviceids = st.multiselect(
         "Select bikes (device IDs)",
         options=device_list,
@@ -729,4 +703,4 @@ with tab_geofence:
         view = geofence_events[["servertime", "event", "deviceid", "geofence_name"]].copy()
         st.dataframe(view.sort_values("servertime", ascending=False), use_container_width=True)
 
-st.caption("✅ Device ID column is tc_positions.deviceid. Date range defaults to the latest servertime data in tc_positions.")
+st.caption("✅ Device ID column is tc_positions.deviceid. Device list loads from tc_devices for fast startup. Positions are filtered by servertime for accuracy and speed.")
