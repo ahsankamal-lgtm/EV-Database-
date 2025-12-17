@@ -6,32 +6,30 @@ import pandas as pd
 import streamlit as st
 import altair as alt
 import pydeck as pdk
-
-from sqlalchemy import create_engine, text, bindparam
-from sqlalchemy.engine import URL
+import pymysql
 
 
 # =============================
-# App Config
+# UI / CONFIG
 # =============================
 st.set_page_config(page_title="🚲 Bike GPS Analytics (Traccar)", layout="wide")
 st.title("🚲 Bike GPS Analytics (Traccar)")
-st.caption("Keyed by tc_positions.deviceid. Timeline uses fixtime. Noise points are excluded.")
+st.caption("Keyed by tc_positions.deviceid. Timeline uses fixtime. Noise points are excluded by default.")
 
 
 # =============================
-# Constants
+# CONSTANTS
 # =============================
 DB_SCHEMA = "traccar_new"
 POSITIONS_TABLE = f"{DB_SCHEMA}.tc_positions"
 MAX_BIKES = 5
 
-# Treat anything older than 2000-01-01 as noise (you confirmed this)
+# Treat anything older than this as noise
 NOISE_CUTOFF = datetime(2000, 1, 1)
 
 
 # =============================
-# Helpers
+# HELPERS
 # =============================
 def dt_range_inclusive(start_d: date, end_d: date):
     start_dt = datetime.combine(start_d, time.min)
@@ -40,9 +38,9 @@ def dt_range_inclusive(start_d: date, end_d: date):
 
 
 def knots_to_kmh(knots):
-    if knots is None:
-        return np.nan
     try:
+        if knots is None:
+            return np.nan
         return float(knots) * 1.852
     except Exception:
         return np.nan
@@ -81,7 +79,7 @@ def to_bool(x):
 
 
 def format_hms(seconds: float) -> str:
-    if seconds is None or np.isnan(seconds) or seconds <= 0:
+    if seconds is None or (isinstance(seconds, float) and np.isnan(seconds)) or seconds <= 0:
         return "0:00:00"
     seconds = int(round(seconds))
     h = seconds // 3600
@@ -108,7 +106,7 @@ def split_session_by_day(start_ts: pd.Timestamp, end_ts: pd.Timestamp):
 
 
 def alt_line(df, x, y, color, title, y_title=None):
-    chart = (
+    return (
         alt.Chart(df)
         .mark_line()
         .encode(
@@ -120,50 +118,59 @@ def alt_line(df, x, y, color, title, y_title=None):
         .properties(height=360, title=title)
         .interactive()
     )
-    return chart
 
 
 # =============================
-# DB Connection
+# DATABASE CONNECTION (PyMySQL)
 # =============================
 @st.cache_resource
-def get_engine():
+def get_conn_params():
     cfg = st.secrets["mysql"]
-    url = URL.create(
-        drivername="mysql+pymysql",
-        username=cfg["username"],
-        password=cfg["password"],
-        host=cfg["host"],
-        port=int(cfg.get("port", 3306)),
-        database=cfg["database"],
-    )
-    return create_engine(url, pool_pre_ping=True, pool_recycle=3600)
+    return {
+        "host": cfg["host"],
+        "port": int(cfg.get("port", 3306)),
+        "user": cfg["username"],
+        "password": cfg["password"],
+        "database": cfg["database"],
+        "cursorclass": pymysql.cursors.DictCursor,
+        "autocommit": True,
+    }
 
 
-engine = get_engine()
+def fetch_df(query: str, params: tuple):
+    conn_params = get_conn_params()
+    connection = pymysql.connect(**conn_params)
+    try:
+        with connection.cursor() as cur:
+            cur.execute(query, params)
+            rows = cur.fetchall()
+        return pd.DataFrame(rows)
+    finally:
+        connection.close()
 
 
 # =============================
-# Fetch device list
+# DEVICE LIST
 # =============================
 @st.cache_data(ttl=60)
 def fetch_device_ids():
-    q = text(f"""
+    q = f"""
         SELECT DISTINCT deviceid
         FROM {POSITIONS_TABLE}
-        WHERE fixtime >= :cutoff
+        WHERE fixtime >= %s
         ORDER BY deviceid;
-    """)
-    with engine.connect() as conn:
-        rows = conn.execute(q, {"cutoff": NOISE_CUTOFF}).fetchall()
-    return [int(r[0]) for r in rows if r and r[0] is not None]
+    """
+    df_ids = fetch_df(q, (NOISE_CUTOFF,))
+    if df_ids.empty:
+        return []
+    return [int(x) for x in df_ids["deviceid"].dropna().tolist()]
 
 
 device_ids = fetch_device_ids()
 
 
 # =============================
-# Sidebar Filters
+# SIDEBAR FILTERS
 # =============================
 st.sidebar.header("Filters")
 
@@ -197,78 +204,68 @@ num_days = (end_date - start_date).days + 1
 
 
 # =============================
-# Load positions (optimized)
+# LOAD POSITIONS
 # =============================
 @st.cache_data(ttl=60)
 def fetch_positions(device_list, start_dt, end_dt):
+    # Build placeholders for IN (...)
     device_list = [int(x) for x in device_list]
+    placeholders = ",".join(["%s"] * len(device_list))
 
-    q = (
-        text(f"""
-            SELECT
-                id,
-                protocol,
-                deviceid,
-                servertime,
-                devicetime,
-                fixtime,
-                valid,
-                latitude,
-                longitude,
-                altitude,
-                speed,
-                course,
-                address,
-                attributes,
+    q = f"""
+        SELECT
+            id,
+            protocol,
+            deviceid,
+            servertime,
+            devicetime,
+            fixtime,
+            valid,
+            latitude,
+            longitude,
+            altitude,
+            speed,
+            course,
+            address,
+            attributes,
 
-                JSON_UNQUOTE(JSON_EXTRACT(attributes, '$.event')) AS event,
-                JSON_UNQUOTE(JSON_EXTRACT(attributes, '$.ignition')) AS ignition_raw,
-                JSON_UNQUOTE(JSON_EXTRACT(attributes, '$.door')) AS door_raw,
-                JSON_UNQUOTE(JSON_EXTRACT(attributes, '$.motion')) AS motion_raw,
+            JSON_UNQUOTE(JSON_EXTRACT(attributes, '$.event')) AS event,
+            JSON_UNQUOTE(JSON_EXTRACT(attributes, '$.ignition')) AS ignition_raw,
+            JSON_UNQUOTE(JSON_EXTRACT(attributes, '$.door')) AS door_raw,
+            JSON_UNQUOTE(JSON_EXTRACT(attributes, '$.motion')) AS motion_raw,
 
-                CAST(JSON_UNQUOTE(JSON_EXTRACT(attributes, '$.fuel1')) AS DECIMAL(10,4)) AS fuel1,
-                CAST(JSON_UNQUOTE(JSON_EXTRACT(attributes, '$.fuel2')) AS DECIMAL(18,4)) AS fuel2,
-                CAST(JSON_UNQUOTE(JSON_EXTRACT(attributes, '$.temp1')) AS DECIMAL(18,0)) AS temp1,
+            CAST(JSON_UNQUOTE(JSON_EXTRACT(attributes, '$.fuel1')) AS DECIMAL(10,4)) AS fuel1,
+            CAST(JSON_UNQUOTE(JSON_EXTRACT(attributes, '$.fuel2')) AS DECIMAL(18,4)) AS fuel2,
+            CAST(JSON_UNQUOTE(JSON_EXTRACT(attributes, '$.temp1')) AS DECIMAL(18,0)) AS temp1,
 
-                CAST(JSON_UNQUOTE(JSON_EXTRACT(attributes, '$.distance')) AS DECIMAL(18,8)) AS distance,
-                CAST(JSON_UNQUOTE(JSON_EXTRACT(attributes, '$.totalDistance')) AS DECIMAL(18,8)) AS totalDistance
+            CAST(JSON_UNQUOTE(JSON_EXTRACT(attributes, '$.distance')) AS DECIMAL(18,8)) AS distance,
+            CAST(JSON_UNQUOTE(JSON_EXTRACT(attributes, '$.totalDistance')) AS DECIMAL(18,8)) AS totalDistance
 
-            FROM {POSITIONS_TABLE}
-            WHERE deviceid IN :deviceids
-              AND fixtime BETWEEN :start_dt AND :end_dt
-              AND fixtime >= :cutoff
-              AND valid = 1
-              AND latitude <> 0 AND longitude <> 0
-            ORDER BY deviceid, fixtime;
-        """)
-        .bindparams(bindparam("deviceids", expanding=True))
-    )
+        FROM {POSITIONS_TABLE}
+        WHERE deviceid IN ({placeholders})
+          AND fixtime BETWEEN %s AND %s
+          AND fixtime >= %s
+          AND valid = 1
+          AND latitude <> 0 AND longitude <> 0
+        ORDER BY deviceid, fixtime;
+    """
 
-    with engine.connect() as conn:
-        df = pd.read_sql(
-            q,
-            conn,
-            params={
-                "deviceids": device_list,
-                "start_dt": start_dt,
-                "end_dt": end_dt,
-                "cutoff": NOISE_CUTOFF,
-            },
-        )
+    params = tuple(device_list) + (start_dt, end_dt, NOISE_CUTOFF)
+    df = fetch_df(q, params)
 
-    # types
+    if df.empty:
+        return df
+
     for c in ["servertime", "devicetime", "fixtime"]:
         df[c] = pd.to_datetime(df[c], errors="coerce")
 
-    # speed km/h
     df["speed_kmh"] = df["speed"].apply(knots_to_kmh)
 
-    # booleans
     df["ignition"] = df["ignition_raw"].apply(to_bool)
-    df["door"] = df["door_raw"].apply(to_bool)        # Charging ON/OFF
+    df["door"] = df["door_raw"].apply(to_bool)      # Charging ON/OFF
     df["motion"] = df["motion_raw"].apply(to_bool)
 
-    # Fallback parse for safety (if JSON extraction fails)
+    # Fallback parsing if JSON_EXTRACT is null for some reason
     if df["fuel1"].isna().all() or df["door"].isna().all():
         attrs = df["attributes"].apply(safe_json_load)
         if df["fuel1"].isna().all():
@@ -296,7 +293,7 @@ if df.empty:
 
 
 # =============================
-# Tabs
+# TABS
 # =============================
 tab_overview, tab_graphs, tab_charging, tab_popular, tab_route = st.tabs(
     ["Overview", "Graphs", "Charging", "Popular locations", "Route map"]
@@ -304,7 +301,7 @@ tab_overview, tab_graphs, tab_charging, tab_popular, tab_route = st.tabs(
 
 
 # =============================
-# Overview
+# OVERVIEW TAB
 # =============================
 with tab_overview:
     st.subheader("Overview (per selected bike)")
@@ -313,12 +310,12 @@ with tab_overview:
     for deviceid, g in df.groupby("deviceid"):
         g = g.sort_values("fixtime")
 
-        # Avg speed excluding zeros
+        # Avg speed ignoring zeros
         nz = g.loc[g["speed_kmh"] > 0, "speed_kmh"].dropna()
         avg_speed = float(nz.mean()) if len(nz) else np.nan
         max_speed = float(g["speed_kmh"].max()) if g["speed_kmh"].notna().any() else np.nan
 
-        # Distance: prefer totalDistance delta; fallback sum(distance)
+        # Distance: prefer totalDistance delta; else sum(distance)
         total_dist = np.nan
         td = g["totalDistance"].dropna()
         if len(td) >= 2:
@@ -329,25 +326,20 @@ with tab_overview:
 
         avg_daily_dist = total_dist / num_days if (not np.isnan(total_dist) and num_days > 0) else np.nan
 
-        rows.append(
-            {
-                "deviceid": int(deviceid),
-                "Avg daily distance (km)": avg_daily_dist,
-                "Avg speed (km/h) [zeros ignored]": avg_speed,
-                "Max speed (km/h)": max_speed,
-                "Total distance in range (km)": total_dist,
-                "Points": int(len(g)),
-            }
-        )
+        rows.append({
+            "deviceid": int(deviceid),
+            "Avg daily distance (km)": avg_daily_dist,
+            "Avg speed (km/h) [zeros ignored]": avg_speed,
+            "Max speed (km/h)": max_speed,
+            "Total distance in range (km)": total_dist,
+            "Points": int(len(g)),
+        })
 
-    out = pd.DataFrame(rows).sort_values("deviceid")
-    st.dataframe(out, use_container_width=True)
-
-    st.caption("Avg speed ignores 0 km/h. Distance uses totalDistance delta when available; otherwise sums distance.")
+    st.dataframe(pd.DataFrame(rows).sort_values("deviceid"), use_container_width=True)
 
 
 # =============================
-# Graphs
+# GRAPHS TAB
 # =============================
 with tab_graphs:
     st.subheader("Graphs")
@@ -359,7 +351,7 @@ with tab_graphs:
         use_container_width=True,
     )
 
-    st.markdown("### 2) Distance travelled (distance field)")
+    st.markdown("### 2) Distance travelled over time")
     st.altair_chart(
         alt_line(df.dropna(subset=["fixtime", "distance"]), "fixtime:T", "distance:Q", "deviceid:N",
                  "Distance over time", "Distance"),
@@ -373,15 +365,13 @@ with tab_graphs:
         use_container_width=True,
     )
 
-    st.caption("Temp1 is your encoded EENNSS (Eco/Normal/Sports mapping as per your definition).")
-
 
 # =============================
-# Charging
+# CHARGING TAB
 # =============================
 with tab_charging:
     st.subheader("Charging")
-    st.caption("Charging ON/OFF is attributes.door. SOC is attributes.fuel1.")
+    st.caption("Charging ON/OFF uses attributes.door. SOC uses attributes.fuel1. Plug-in location uses lat/lon at session start.")
 
     sessions = []
 
@@ -393,10 +383,9 @@ with tab_charging:
 
         door = g["door"].fillna(False).astype(bool)
 
-        start_idxs = []
-        end_idxs = []
-
+        start_idxs, end_idxs = [], []
         prev = door.iloc[0]
+
         for i in range(1, len(door)):
             cur = door.iloc[i]
             if (prev is False) and (cur is True):
@@ -411,11 +400,9 @@ with tab_charging:
             end_idxs = end_idxs + [len(g) - 1]
 
         pairs = []
-        si = 0
-        ei = 0
+        si = ei = 0
         while si < len(start_idxs) and ei < len(end_idxs):
-            s = start_idxs[si]
-            e = end_idxs[ei]
+            s, e = start_idxs[si], end_idxs[ei]
             if e <= s:
                 ei += 1
                 continue
@@ -429,18 +416,16 @@ with tab_charging:
             if pd.isna(start_ts) or pd.isna(end_ts) or end_ts <= start_ts:
                 continue
 
-            sessions.append(
-                {
-                    "deviceid": int(deviceid),
-                    "start": start_ts,
-                    "end": end_ts,
-                    "duration_sec": (end_ts - start_ts).total_seconds(),
-                    "SOC_in": g.loc[s, "fuel1"],
-                    "SOC_out": g.loc[e, "fuel1"],
-                    "lat_in": g.loc[s, "latitude"],
-                    "lon_in": g.loc[s, "longitude"],
-                }
-            )
+            sessions.append({
+                "deviceid": int(deviceid),
+                "start": start_ts,
+                "end": end_ts,
+                "duration_sec": (end_ts - start_ts).total_seconds(),
+                "SOC_in": g.loc[s, "fuel1"],
+                "SOC_out": g.loc[e, "fuel1"],
+                "lat_in": g.loc[s, "latitude"],
+                "lon_in": g.loc[s, "longitude"],
+            })
 
     sessions_df = pd.DataFrame(sessions)
 
@@ -473,9 +458,9 @@ with tab_charging:
                 .sort_values(["deviceid", "date"])
             )
             daily_summary["charging_time"] = daily_summary["charging_seconds"].apply(format_hms)
+
             st.dataframe(daily_summary[["deviceid", "date", "charging_time"]], use_container_width=True)
 
-            # Bar chart in Altair
             bar = (
                 alt.Chart(daily_summary)
                 .mark_bar()
@@ -499,22 +484,19 @@ with tab_charging:
                 lambda x: f"Device {x['deviceid']} | SOC_in={x['SOC_in']} | SOC_out={x['SOC_out']}",
                 axis=1,
             )
-
             layer = pdk.Layer(
                 "ScatterplotLayer",
                 data=locs,
                 get_position="[lon_in, lat_in]",
-                get_radius=50,
+                get_radius=55,
                 pickable=True,
             )
-
             view_state = pdk.ViewState(
                 latitude=float(locs["lat_in"].mean()),
                 longitude=float(locs["lon_in"].mean()),
                 zoom=12,
                 pitch=0,
             )
-
             st.pydeck_chart(
                 pdk.Deck(
                     initial_view_state=view_state,
@@ -532,7 +514,7 @@ with tab_charging:
 
 
 # =============================
-# Popular locations (hotspots)
+# POPULAR LOCATIONS TAB
 # =============================
 with tab_popular:
     st.subheader("Popular locations (hotspots)")
@@ -586,7 +568,7 @@ with tab_popular:
 
 
 # =============================
-# Route map
+# ROUTE MAP TAB
 # =============================
 with tab_route:
     st.subheader("Route map (polyline)")
@@ -613,18 +595,16 @@ with tab_route:
         start_pt = route.iloc[0]
         end_pt = route.iloc[-1]
 
-        markers = pd.DataFrame(
-            [
-                {"name": "Start", "lon": float(start_pt["longitude"]), "lat": float(start_pt["latitude"])},
-                {"name": "End", "lon": float(end_pt["longitude"]), "lat": float(end_pt["latitude"])},
-            ]
-        )
+        markers = pd.DataFrame([
+            {"name": "Start", "lon": float(start_pt["longitude"]), "lat": float(start_pt["latitude"])},
+            {"name": "End", "lon": float(end_pt["longitude"]), "lat": float(end_pt["latitude"])},
+        ])
 
         marker_layer = pdk.Layer(
             "ScatterplotLayer",
             data=markers,
             get_position="[lon, lat]",
-            get_radius=70,
+            get_radius=75,
             pickable=True,
         )
 
