@@ -6,7 +6,6 @@ import pandas as pd
 import streamlit as st
 import altair as alt
 import pydeck as pdk
-import pymysql
 
 
 # =============================
@@ -23,8 +22,6 @@ st.caption("Keyed by tc_positions.deviceid. Timeline uses fixtime. Noise points 
 DB_SCHEMA = "traccar_new"
 POSITIONS_TABLE = f"{DB_SCHEMA}.tc_positions"
 MAX_BIKES = 5
-
-# Treat anything older than this as noise
 NOISE_CUTOFF = datetime(2000, 1, 1)
 
 
@@ -121,8 +118,31 @@ def alt_line(df, x, y, color, title, y_title=None):
 
 
 # =============================
-# DATABASE CONNECTION (PyMySQL)
+# DB DRIVER AUTO-DETECT
 # =============================
+DB_DRIVER = None
+try:
+    import pymysql  # type: ignore
+    DB_DRIVER = "pymysql"
+except Exception:
+    try:
+        import mysql.connector  # type: ignore
+        DB_DRIVER = "mysql-connector"
+    except Exception:
+        DB_DRIVER = None
+
+if DB_DRIVER is None:
+    st.error(
+        "Missing MySQL driver in the Streamlit environment.\n\n"
+        "Fix:\n"
+        "1) Ensure `requirements.txt` is in the repo ROOT (same folder as app.py)\n"
+        "2) Put this inside requirements.txt:\n\n"
+        "streamlit\npandas\nnumpy\naltair\npydeck\npymysql\nmysql-connector-python\n\n"
+        "Then redeploy / reboot the app from Streamlit Cloud."
+    )
+    st.stop()
+
+
 @st.cache_resource
 def get_conn_params():
     cfg = st.secrets["mysql"]
@@ -132,21 +152,48 @@ def get_conn_params():
         "user": cfg["username"],
         "password": cfg["password"],
         "database": cfg["database"],
-        "cursorclass": pymysql.cursors.DictCursor,
-        "autocommit": True,
     }
 
 
 def fetch_df(query: str, params: tuple):
-    conn_params = get_conn_params()
-    connection = pymysql.connect(**conn_params)
+    cfg = get_conn_params()
+
+    if DB_DRIVER == "pymysql":
+        import pymysql  # type: ignore
+        conn = pymysql.connect(
+            host=cfg["host"],
+            port=cfg["port"],
+            user=cfg["user"],
+            password=cfg["password"],
+            database=cfg["database"],
+            cursorclass=pymysql.cursors.DictCursor,
+            autocommit=True,
+        )
+        try:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                rows = cur.fetchall()
+            return pd.DataFrame(rows)
+        finally:
+            conn.close()
+
+    # mysql-connector fallback
+    import mysql.connector  # type: ignore
+    conn = mysql.connector.connect(
+        host=cfg["host"],
+        port=cfg["port"],
+        user=cfg["user"],
+        password=cfg["password"],
+        database=cfg["database"],
+    )
     try:
-        with connection.cursor() as cur:
-            cur.execute(query, params)
-            rows = cur.fetchall()
+        cur = conn.cursor(dictionary=True)
+        cur.execute(query, params)
+        rows = cur.fetchall()
+        cur.close()
         return pd.DataFrame(rows)
     finally:
-        connection.close()
+        conn.close()
 
 
 # =============================
@@ -208,7 +255,6 @@ num_days = (end_date - start_date).days + 1
 # =============================
 @st.cache_data(ttl=60)
 def fetch_positions(device_list, start_dt, end_dt):
-    # Build placeholders for IN (...)
     device_list = [int(x) for x in device_list]
     placeholders = ",".join(["%s"] * len(device_list))
 
@@ -262,18 +308,16 @@ def fetch_positions(device_list, start_dt, end_dt):
     df["speed_kmh"] = df["speed"].apply(knots_to_kmh)
 
     df["ignition"] = df["ignition_raw"].apply(to_bool)
-    df["door"] = df["door_raw"].apply(to_bool)      # Charging ON/OFF
+    df["door"] = df["door_raw"].apply(to_bool)      # charging ON/OFF
     df["motion"] = df["motion_raw"].apply(to_bool)
 
-    # Fallback parsing if JSON_EXTRACT is null for some reason
+    # Fallback parsing in case JSON_EXTRACT returns null
     if df["fuel1"].isna().all() or df["door"].isna().all():
         attrs = df["attributes"].apply(safe_json_load)
         if df["fuel1"].isna().all():
             df["fuel1"] = attrs.apply(lambda a: a.get("fuel1", np.nan))
         if df["door"].isna().all():
             df["door"] = attrs.apply(lambda a: a.get("door", None))
-        if df["ignition"].isna().all():
-            df["ignition"] = attrs.apply(lambda a: a.get("ignition", None))
         if df["temp1"].isna().all():
             df["temp1"] = attrs.apply(lambda a: a.get("temp1", np.nan))
         if df["distance"].isna().all():
@@ -310,12 +354,10 @@ with tab_overview:
     for deviceid, g in df.groupby("deviceid"):
         g = g.sort_values("fixtime")
 
-        # Avg speed ignoring zeros
         nz = g.loc[g["speed_kmh"] > 0, "speed_kmh"].dropna()
         avg_speed = float(nz.mean()) if len(nz) else np.nan
         max_speed = float(g["speed_kmh"].max()) if g["speed_kmh"].notna().any() else np.nan
 
-        # Distance: prefer totalDistance delta; else sum(distance)
         total_dist = np.nan
         td = g["totalDistance"].dropna()
         if len(td) >= 2:
@@ -377,7 +419,6 @@ with tab_charging:
 
     for deviceid, g in df.groupby("deviceid"):
         g = g.sort_values("fixtime").reset_index(drop=True)
-
         if g["door"].isna().all():
             continue
 
@@ -385,7 +426,6 @@ with tab_charging:
 
         start_idxs, end_idxs = [], []
         prev = door.iloc[0]
-
         for i in range(1, len(door)):
             cur = door.iloc[i]
             if (prev is False) and (cur is True):
@@ -572,7 +612,6 @@ with tab_popular:
 # =============================
 with tab_route:
     st.subheader("Route map (polyline)")
-
     one_device = st.selectbox("Choose one bike (deviceid)", options=selected_devices)
 
     route = df[df["deviceid"] == one_device].sort_values("fixtime").copy()
