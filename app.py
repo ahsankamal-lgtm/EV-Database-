@@ -564,8 +564,9 @@ with tab_popular:
     if pop.empty:
         st.warning("No valid points to compute hotspots.")
     else:
-        precision = st.slider("Hotspot grid precision (decimal places)", 2, 5, 3)
-        top_n = st.slider("Show top N hotspots", 10, 500, 100)
+        # --- CHANGE REQUESTED: remove sliders, use fixed binning and show hotspots in ORANGE ---
+        precision = 3
+        top_n = 500
 
         pop["lat_bin"] = pop["latitude"].round(precision)
         pop["lon_bin"] = pop["longitude"].round(precision)
@@ -584,7 +585,8 @@ with tab_popular:
             "ScatterplotLayer",
             data=hotspot,
             get_position="[lon_bin, lat_bin]",
-            get_radius="count * 5",
+            get_radius="count * 6",
+            get_fill_color=[255, 165, 0],  # ORANGE
             pickable=True,
         )
 
@@ -623,11 +625,13 @@ with tab_route:
         path = route[["longitude", "latitude"]].values.tolist()
         path_df = pd.DataFrame([{"deviceid": int(one_device), "path": path}])
 
+        # --- CHANGE REQUESTED: make route clearly visible with a distinct color ---
         path_layer = pdk.Layer(
             "PathLayer",
             data=path_df,
             get_path="path",
-            get_width=5,
+            get_width=7,
+            get_color=[0, 255, 255],  # CYAN for visibility
             pickable=False,
         )
 
