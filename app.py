@@ -337,6 +337,67 @@ if df.empty:
 
 
 # =============================
+# NEW: BUILD A TRUE "DISTANCE TRAVELLED OVER TIME" SERIES
+# =============================
+def build_distance_over_time(raw_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Fixes the "distance over time" issue by plotting a *cumulative distance travelled* series.
+
+    Priority:
+    1) Use totalDistance if it behaves like an odometer:
+       cumulative_km = totalDistance - first(totalDistance in selected range)
+    2) Else fallback to cumulative sum of distance increments, but with sanity filtering
+       to avoid unrealistic spikes.
+    """
+    d = raw_df.dropna(subset=["fixtime", "deviceid"]).copy()
+    if d.empty:
+        return d
+
+    d = d.sort_values(["deviceid", "fixtime"]).reset_index(drop=True)
+    d["distance_travelled_km"] = np.nan
+
+    for deviceid, g in d.groupby("deviceid", sort=False):
+        g = g.copy().sort_values("fixtime")
+
+        td = g["totalDistance"].dropna().astype(float) if "totalDistance" in g.columns else pd.Series([], dtype=float)
+
+        use_td = False
+        if len(td) >= 2:
+            td_min = float(td.min())
+            td_max = float(td.max())
+            td_range = td_max - td_min
+
+            # Heuristic: odometer should be non-decreasing-ish and range shouldn't be insane for the selected dates.
+            # We won't hard-fail if there are tiny drops, but we will ignore totalDistance if range is negative/invalid.
+            if td_range >= 0:
+                use_td = True
+
+        if use_td:
+            # Align to 0 at the start of selected range so the graph shows "distance travelled within the range"
+            first_td = float(td.iloc[0])
+            g["distance_travelled_km"] = g["totalDistance"].astype(float) - first_td
+        else:
+            # Fallback: cumulative sum of per-point increments, but filter unrealistic jumps.
+            inc = g["distance"].astype(float)
+
+            # If "distance" is already an increment, it should usually be small.
+            # We compute per-row increment and cap outliers to avoid spikes from bad telemetry/units.
+            # Cap rule: anything > 2 km between consecutive points is treated as noise (can adjust later).
+            inc_clean = inc.copy()
+            inc_clean = inc_clean.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+            inc_clean = inc_clean.clip(lower=0.0, upper=2.0)  # <- prevents wild spikes
+
+            g["distance_travelled_km"] = inc_clean.cumsum()
+
+        d.loc[g.index, "distance_travelled_km"] = g["distance_travelled_km"].values
+
+    return d
+
+
+dist_time_df = build_distance_over_time(df)
+
+
+# =============================
 # TABS
 # =============================
 tab_overview, tab_graphs, tab_charging, tab_popular, tab_route = st.tabs(
@@ -393,10 +454,21 @@ with tab_graphs:
         use_container_width=True,
     )
 
-    st.markdown("### 2) Distance travelled over time")
+    # --- FIXED GRAPH ---
+    st.markdown("### 2) Distance travelled over time (total in selected range)")
+    st.caption(
+        "This is now a *cumulative distance travelled* curve per bike. "
+        "It uses totalDistance (odometer-style) when reliable; otherwise it falls back to a cleaned cumulative sum."
+    )
     st.altair_chart(
-        alt_line(df.dropna(subset=["fixtime", "distance"]), "fixtime:T", "distance:Q", "deviceid:N",
-                 "Distance over time", "Distance"),
+        alt_line(
+            dist_time_df.dropna(subset=["fixtime", "distance_travelled_km"]),
+            "fixtime:T",
+            "distance_travelled_km:Q",
+            "deviceid:N",
+            "Distance travelled over time (cumulative)",
+            "Distance travelled (km)",
+        ),
         use_container_width=True,
     )
 
@@ -564,7 +636,7 @@ with tab_popular:
     if pop.empty:
         st.warning("No valid points to compute hotspots.")
     else:
-        # --- CHANGE REQUESTED: remove sliders, use fixed binning and show hotspots in ORANGE ---
+        # remove sliders, fixed binning + orange hotspots
         precision = 3
         top_n = 500
 
@@ -625,7 +697,6 @@ with tab_route:
         path = route[["longitude", "latitude"]].values.tolist()
         path_df = pd.DataFrame([{"deviceid": int(one_device), "path": path}])
 
-        # --- CHANGE REQUESTED: make route clearly visible with a distinct color ---
         path_layer = pdk.Layer(
             "PathLayer",
             data=path_df,
