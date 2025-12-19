@@ -1,4 +1,4 @@
-\import json
+import json
 from datetime import datetime, date, time, timedelta
 
 import numpy as np
@@ -337,64 +337,56 @@ if df.empty:
 
 
 # =============================
-# NEW: BUILD A TRUE "DISTANCE TRAVELLED OVER TIME" SERIES
+# NEW: BUILD "DISTANCE TRAVELLED BETWEEN POINTS" USING totalDistance DIFFERENCES
 # =============================
-def build_distance_over_time(raw_df: pd.DataFrame) -> pd.DataFrame:
+def build_distance_step_over_time(raw_df: pd.DataFrame) to pd.DataFrame:
     """
-    Fixes the "distance over time" issue by plotting a *cumulative distance travelled* series.
+    Builds a per-point 'distance travelled since previous reading' series from totalDistance.
 
-    Priority:
-    1) Use totalDistance if it behaves like an odometer:
-       cumulative_km = totalDistance - first(totalDistance in selected range)
-    2) Else fallback to cumulative sum of distance increments, but with sanity filtering
-       to avoid unrealistic spikes.
+    Example:
+    totalDistance: 4 -> 10
+    step distance: 4, then 6
+
+    - First row per device: step_km = totalDistance(first)
+    - Next rows: step_km = max(totalDistance(curr) - totalDistance(prev), 0)
+    - Also applies basic sanity filtering to avoid y-axis explosions from bad jumps.
     """
     d = raw_df.dropna(subset=["fixtime", "deviceid"]).copy()
     if d.empty:
         return d
 
     d = d.sort_values(["deviceid", "fixtime"]).reset_index(drop=True)
-    d["distance_travelled_km"] = np.nan
+
+    # Ensure numeric
+    d["totalDistance"] = pd.to_numeric(d.get("totalDistance"), errors="coerce")
+
+    d["distance_step_km"] = np.nan
 
     for deviceid, g in d.groupby("deviceid", sort=False):
-        g = g.copy().sort_values("fixtime")
+        g = g.sort_values("fixtime").copy()
 
-        td = g["totalDistance"].dropna().astype(float) if "totalDistance" in g.columns else pd.Series([], dtype=float)
+        td = g["totalDistance"].astype(float)
 
-        use_td = False
-        if len(td) >= 2:
-            td_min = float(td.min())
-            td_max = float(td.max())
-            td_range = td_max - td_min
+        # Diff to get per-interval increments
+        step = td.diff()
 
-            # Heuristic: odometer should be non-decreasing-ish and range shouldn't be insane for the selected dates.
-            # We won't hard-fail if there are tiny drops, but we will ignore totalDistance if range is negative/invalid.
-            if td_range >= 0:
-                use_td = True
+        # First point: treat as its own travelled distance (matches your t=0 example)
+        if len(step) > 0:
+            step.iloc[0] = td.iloc[0]
 
-        if use_td:
-            # Align to 0 at the start of selected range so the graph shows "distance travelled within the range"
-            first_td = float(td.iloc[0])
-            g["distance_travelled_km"] = g["totalDistance"].astype(float) - first_td
-        else:
-            # Fallback: cumulative sum of per-point increments, but filter unrealistic jumps.
-            inc = g["distance"].astype(float)
+        # Clean: negative deltas are usually resets/glitches
+        step = step.clip(lower=0)
 
-            # If "distance" is already an increment, it should usually be small.
-            # We compute per-row increment and cap outliers to avoid spikes from bad telemetry/units.
-            # Cap rule: anything > 2 km between consecutive points is treated as noise (can adjust later).
-            inc_clean = inc.copy()
-            inc_clean = inc_clean.replace([np.inf, -np.inf], np.nan).fillna(0.0)
-            inc_clean = inc_clean.clip(lower=0.0, upper=2.0)  # <- prevents wild spikes
+        # Optional sanity cap: prevents insane spikes
+        # Cap at 5 km per point (you can adjust if needed)
+        step = step.clip(upper=5.0)
 
-            g["distance_travelled_km"] = inc_clean.cumsum()
-
-        d.loc[g.index, "distance_travelled_km"] = g["distance_travelled_km"].values
+        d.loc[g.index, "distance_step_km"] = step.values
 
     return d
 
 
-dist_time_df = build_distance_over_time(df)
+dist_step_df = build_distance_step_over_time(df)
 
 
 # =============================
@@ -454,19 +446,20 @@ with tab_graphs:
         use_container_width=True,
     )
 
-    # --- FIXED GRAPH ---
-    st.markdown("### 2) Distance travelled over time (total in selected range)")
+    # --- UPDATED GRAPH: distance travelled between points ---
+    st.markdown("### 2) Distance travelled over time (per reading, based on totalDistance deltas)")
     st.caption(
-        "This is now a *cumulative distance travelled* curve per bike. "
-        "It uses totalDistance (odometer-style) when reliable; otherwise it falls back to a cleaned cumulative sum."
+        "This plots the distance travelled **between consecutive readings**. "
+        "It is computed as: current totalDistance - previous totalDistance (per device). "
+        "The first reading uses totalDistance itself (matches your t=0 example)."
     )
     st.altair_chart(
         alt_line(
-            dist_time_df.dropna(subset=["fixtime", "distance_travelled_km"]),
+            dist_step_df.dropna(subset=["fixtime", "distance_step_km"]),
             "fixtime:T",
-            "distance_travelled_km:Q",
+            "distance_step_km:Q",
             "deviceid:N",
-            "Distance travelled over time (cumulative)",
+            "Distance travelled over time (per reading)",
             "Distance travelled (km)",
         ),
         use_container_width=True,
@@ -636,7 +629,6 @@ with tab_popular:
     if pop.empty:
         st.warning("No valid points to compute hotspots.")
     else:
-        # remove sliders, fixed binning + orange hotspots
         precision = 3
         top_n = 500
 
@@ -742,4 +734,3 @@ with tab_route:
             route[["fixtime", "latitude", "longitude", "speed_kmh", "fuel1", "door", "ignition"]].head(300),
             use_container_width=True,
         )
-
