@@ -24,6 +24,10 @@ POSITIONS_TABLE = f"{DB_SCHEMA}.tc_positions"
 MAX_BIKES = 5
 NOISE_CUTOFF = datetime(2000, 1, 1)
 
+# for spike sanity (distance per interval cannot exceed this speed realistically)
+MAX_PLAUSIBLE_SPEED_KMH = 120.0
+SANITY_BUFFER = 1.5  # allow 50% extra beyond plausible to avoid over-clamping
+
 
 # =============================
 # HELPERS
@@ -177,7 +181,6 @@ def fetch_df(query: str, params: tuple):
         finally:
             conn.close()
 
-    # mysql-connector fallback
     import mysql.connector  # type: ignore
     conn = mysql.connector.connect(
         host=cfg["host"],
@@ -308,10 +311,9 @@ def fetch_positions(device_list, start_dt, end_dt):
     df["speed_kmh"] = df["speed"].apply(knots_to_kmh)
 
     df["ignition"] = df["ignition_raw"].apply(to_bool)
-    df["door"] = df["door_raw"].apply(to_bool)      # charging ON/OFF
+    df["door"] = df["door_raw"].apply(to_bool)
     df["motion"] = df["motion_raw"].apply(to_bool)
 
-    # Fallback parsing in case JSON_EXTRACT returns null
     if df["fuel1"].isna().all() or df["door"].isna().all():
         attrs = df["attributes"].apply(safe_json_load)
         if df["fuel1"].isna().all():
@@ -337,51 +339,54 @@ if df.empty:
 
 
 # =============================
-# NEW: BUILD "DISTANCE TRAVELLED BETWEEN POINTS" USING totalDistance DIFFERENCES
+# FIX: DISTANCE PER READING USING totalDistance DIFFERENCES (WITH UNIT DETECTION + SANITY)
 # =============================
-def build_distance_step_over_time(raw_df: pd.DataFrame) to pd.DataFrame:
-    """
-    Builds a per-point 'distance travelled since previous reading' series from totalDistance.
-
-    Example:
-    totalDistance: 4 -> 10
-    step distance: 4, then 6
-
-    - First row per device: step_km = totalDistance(first)
-    - Next rows: step_km = max(totalDistance(curr) - totalDistance(prev), 0)
-    - Also applies basic sanity filtering to avoid y-axis explosions from bad jumps.
-    """
+def build_distance_step_over_time(raw_df: pd.DataFrame) -> pd.DataFrame:
     d = raw_df.dropna(subset=["fixtime", "deviceid"]).copy()
     if d.empty:
         return d
 
     d = d.sort_values(["deviceid", "fixtime"]).reset_index(drop=True)
 
-    # Ensure numeric
     d["totalDistance"] = pd.to_numeric(d.get("totalDistance"), errors="coerce")
-
     d["distance_step_km"] = np.nan
 
     for deviceid, g in d.groupby("deviceid", sort=False):
         g = g.sort_values("fixtime").copy()
 
         td = g["totalDistance"].astype(float)
+        step_raw = td.diff()
 
-        # Diff to get per-interval increments
-        step = td.diff()
+        # First point: use its own "travel so far" number as the first plotted distance, per your example
+        if len(step_raw) > 0:
+            step_raw.iloc[0] = td.iloc[0]
 
-        # First point: treat as its own travelled distance (matches your t=0 example)
-        if len(step) > 0:
-            step.iloc[0] = td.iloc[0]
+        # negative = resets/glitches
+        step_raw = step_raw.replace([np.inf, -np.inf], np.nan).fillna(0.0).clip(lower=0.0)
 
-        # Clean: negative deltas are usually resets/glitches
-        step = step.clip(lower=0)
+        # ---- UNIT DETECTION (km vs meters) ----
+        # If typical deltas are > 50, it's almost certainly meters (or worse), not km.
+        median_step = float(np.nanmedian(step_raw.values)) if len(step_raw) else 0.0
 
-        # Optional sanity cap: prevents insane spikes
-        # Cap at 5 km per point (you can adjust if needed)
-        step = step.clip(upper=5.0)
+        # Assume:
+        # - deltas <= 50   -> already km (e.g., 0.2km, 2km, etc.)
+        # - deltas > 50    -> meters; convert to km
+        # - deltas > 50000 -> likely millimeters or very noisy; still convert aggressively
+        if median_step > 50.0:
+            step_km = step_raw / 1000.0
+        else:
+            step_km = step_raw
 
-        d.loc[g.index, "distance_step_km"] = step.values
+        # ---- TIME-BASED SANITY CLAMP ----
+        dt_sec = g["fixtime"].diff().dt.total_seconds().fillna(0.0)
+        max_km = (MAX_PLAUSIBLE_SPEED_KMH * (dt_sec / 3600.0)) * SANITY_BUFFER
+
+        # if dt is 0 (duplicate timestamps), allow 0 only
+        max_km = max_km.replace([np.inf, -np.inf], np.nan).fillna(0.0).clip(lower=0.0)
+
+        step_km = np.minimum(step_km.values, max_km.values)
+
+        d.loc[g.index, "distance_step_km"] = step_km
 
     return d
 
@@ -446,12 +451,10 @@ with tab_graphs:
         use_container_width=True,
     )
 
-    # --- UPDATED GRAPH: distance travelled between points ---
-    st.markdown("### 2) Distance travelled over time (per reading, based on totalDistance deltas)")
+    st.markdown("### 2) Distance travelled over time")
     st.caption(
-        "This plots the distance travelled **between consecutive readings**. "
-        "It is computed as: current totalDistance - previous totalDistance (per device). "
-        "The first reading uses totalDistance itself (matches your t=0 example)."
+        "This now plots **distance travelled between consecutive readings** using totalDistance deltas. "
+        "It automatically converts meters to km and clamps impossible spikes using the time gap between points."
     )
     st.altair_chart(
         alt_line(
@@ -650,7 +653,7 @@ with tab_popular:
             data=hotspot,
             get_position="[lon_bin, lat_bin]",
             get_radius="count * 6",
-            get_fill_color=[255, 165, 0],  # ORANGE
+            get_fill_color=[255, 165, 0],
             pickable=True,
         )
 
@@ -694,7 +697,7 @@ with tab_route:
             data=path_df,
             get_path="path",
             get_width=7,
-            get_color=[0, 255, 255],  # CYAN for visibility
+            get_color=[0, 255, 255],
             pickable=False,
         )
 
