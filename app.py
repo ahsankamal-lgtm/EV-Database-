@@ -21,6 +21,7 @@ st.caption("Keyed by tc_positions.deviceid. Timeline uses fixtime. Noise points 
 # =============================
 DB_SCHEMA = "traccar_new"
 POSITIONS_TABLE = f"{DB_SCHEMA}.tc_positions"
+DEVICES_TABLE = f"{DB_SCHEMA}.tc_devices"  # <-- NEW (for name mapping)
 MAX_BIKES = 5
 NOISE_CUTOFF = datetime(2000, 1, 1)
 
@@ -201,23 +202,42 @@ def fetch_df(query: str, params: tuple):
 
 
 # =============================
-# DEVICE LIST
+# DEVICE LIST (NOW USING tc_devices.name IN UI)
 # =============================
 @st.cache_data(ttl=60)
-def fetch_device_ids():
-    q = f"""
-        SELECT DISTINCT deviceid
-        FROM {POSITIONS_TABLE}
-        WHERE fixtime >= %s
-        ORDER BY deviceid;
+def fetch_device_map():
     """
-    df_ids = fetch_df(q, (NOISE_CUTOFF,))
-    if df_ids.empty:
-        return []
-    return [int(x) for x in df_ids["deviceid"].dropna().tolist()]
+    Returns a DataFrame with columns:
+      - deviceid (tc_devices.id)
+      - device_name (tc_devices.name)
+    Only includes devices that actually have positions after NOISE_CUTOFF.
+    """
+    q = f"""
+        SELECT DISTINCT
+            d.id   AS deviceid,
+            d.name AS device_name
+        FROM {DEVICES_TABLE} d
+        INNER JOIN {POSITIONS_TABLE} p
+            ON p.deviceid = d.id
+        WHERE p.fixtime >= %s
+        ORDER BY d.name;
+    """
+    df_map = fetch_df(q, (NOISE_CUTOFF,))
+    if df_map.empty:
+        return df_map
+
+    df_map["deviceid"] = pd.to_numeric(df_map["deviceid"], errors="coerce")
+    df_map["device_name"] = df_map["device_name"].astype(str)
+    df_map = df_map.dropna(subset=["deviceid", "device_name"]).copy()
+    df_map["deviceid"] = df_map["deviceid"].astype(int)
+
+    # De-dupe names (in case of unexpected duplicates)
+    df_map = df_map.drop_duplicates(subset=["deviceid"], keep="first")
+    return df_map
 
 
-device_ids = fetch_device_ids()
+device_map_df = fetch_device_map()
+device_name_options = device_map_df["device_name"].tolist() if not device_map_df.empty else []
 
 
 # =============================
@@ -236,18 +256,27 @@ if start_date > end_date:
     st.sidebar.error("Start date must be <= End date.")
     st.stop()
 
-selected_devices = st.sidebar.multiselect(
-    "Select up to 5 bike device IDs",
-    options=device_ids,
-    default=device_ids[:1] if device_ids else [],
+# --- CHANGED: Select names instead of IDs ---
+selected_device_names = st.sidebar.multiselect(
+    "Select up to 5 bike names",
+    options=device_name_options,
+    default=device_name_options[:1] if device_name_options else [],
 )
 
-if len(selected_devices) == 0:
-    st.info("Select at least one deviceid to begin.")
+if len(selected_device_names) == 0:
+    st.info("Select at least one bike name to begin.")
     st.stop()
 
-if len(selected_devices) > MAX_BIKES:
+if len(selected_device_names) > MAX_BIKES:
     st.sidebar.error(f"Please select at most {MAX_BIKES} bikes.")
+    st.stop()
+
+# Map selected names -> device IDs (used everywhere else)
+name_to_id = dict(zip(device_map_df["device_name"], device_map_df["deviceid"])) if not device_map_df.empty else {}
+selected_devices = [int(name_to_id[n]) for n in selected_device_names if n in name_to_id]
+
+if len(selected_devices) == 0:
+    st.warning("No matching device IDs found for the selected names.")
     st.stop()
 
 start_dt, end_dt = dt_range_inclusive(start_date, end_date)
@@ -338,6 +367,10 @@ with st.spinner("Loading positions..."):
 if df.empty:
     st.warning("No data returned for the selected filters (after noise/valid filtering). Try a wider date range.")
     st.stop()
+
+# --- OPTIONAL (but kept minimal): add device_name column for reference/use later if needed ---
+if not device_map_df.empty and "device_name" not in df.columns:
+    df = df.merge(device_map_df, on="deviceid", how="left")
 
 
 # =============================
