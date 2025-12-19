@@ -24,9 +24,9 @@ POSITIONS_TABLE = f"{DB_SCHEMA}.tc_positions"
 MAX_BIKES = 5
 NOISE_CUTOFF = datetime(2000, 1, 1)
 
-# for spike sanity (distance per interval cannot exceed this speed realistically)
+# sanity clamp for per-reading increment derived from distance (meters)
 MAX_PLAUSIBLE_SPEED_KMH = 120.0
-SANITY_BUFFER = 1.5  # allow 50% extra beyond plausible to avoid over-clamping
+SANITY_BUFFER = 1.5
 
 
 # =============================
@@ -181,6 +181,7 @@ def fetch_df(query: str, params: tuple):
         finally:
             conn.close()
 
+    # mysql-connector fallback
     import mysql.connector  # type: ignore
     conn = mysql.connector.connect(
         host=cfg["host"],
@@ -311,10 +312,11 @@ def fetch_positions(device_list, start_dt, end_dt):
     df["speed_kmh"] = df["speed"].apply(knots_to_kmh)
 
     df["ignition"] = df["ignition_raw"].apply(to_bool)
-    df["door"] = df["door_raw"].apply(to_bool)
+    df["door"] = df["door_raw"].apply(to_bool)      # charging ON/OFF
     df["motion"] = df["motion_raw"].apply(to_bool)
 
-    if df["fuel1"].isna().all() or df["door"].isna().all():
+    # Fallback parsing in case JSON_EXTRACT returns null
+    if df["fuel1"].isna().all() or df["door"].isna().all() or df["distance"].isna().all():
         attrs = df["attributes"].apply(safe_json_load)
         if df["fuel1"].isna().all():
             df["fuel1"] = attrs.apply(lambda a: a.get("fuel1", np.nan))
@@ -339,59 +341,54 @@ if df.empty:
 
 
 # =============================
-# FIX: DISTANCE PER READING USING totalDistance DIFFERENCES (WITH UNIT DETECTION + SANITY)
+# NEW: DISTANCE TRAVELLED OVER TIME (USING attributes.distance IN METERS)
 # =============================
-def build_distance_step_over_time(raw_df: pd.DataFrame) -> pd.DataFrame:
+def build_distance_over_time_using_distance(raw_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Builds an *increasing* distance travelled curve by using `attributes.distance` as an increment.
+
+    Assumption (based on your dataset):
+    - `distance` is the distance travelled since the previous point (increment)
+    - it is in METERS
+    Therefore:
+    - per_row_km = distance / 1000
+    - cumulative_km = cumsum(per_row_km)
+    Also applies sanity clamping based on time delta between points.
+    """
     d = raw_df.dropna(subset=["fixtime", "deviceid"]).copy()
     if d.empty:
         return d
 
     d = d.sort_values(["deviceid", "fixtime"]).reset_index(drop=True)
 
-    d["totalDistance"] = pd.to_numeric(d.get("totalDistance"), errors="coerce")
+    d["distance"] = pd.to_numeric(d.get("distance"), errors="coerce")
     d["distance_step_km"] = np.nan
+    d["distance_travelled_km"] = np.nan
 
     for deviceid, g in d.groupby("deviceid", sort=False):
         g = g.sort_values("fixtime").copy()
 
-        td = g["totalDistance"].astype(float)
-        step_raw = td.diff()
+        # meters -> km (treating distance as increment)
+        step_km = (g["distance"].astype(float) / 1000.0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        step_km = step_km.clip(lower=0.0)
 
-        # First point: use its own "travel so far" number as the first plotted distance, per your example
-        if len(step_raw) > 0:
-            step_raw.iloc[0] = td.iloc[0]
-
-        # negative = resets/glitches
-        step_raw = step_raw.replace([np.inf, -np.inf], np.nan).fillna(0.0).clip(lower=0.0)
-
-        # ---- UNIT DETECTION (km vs meters) ----
-        # If typical deltas are > 50, it's almost certainly meters (or worse), not km.
-        median_step = float(np.nanmedian(step_raw.values)) if len(step_raw) else 0.0
-
-        # Assume:
-        # - deltas <= 50   -> already km (e.g., 0.2km, 2km, etc.)
-        # - deltas > 50    -> meters; convert to km
-        # - deltas > 50000 -> likely millimeters or very noisy; still convert aggressively
-        if median_step > 50.0:
-            step_km = step_raw / 1000.0
-        else:
-            step_km = step_raw
-
-        # ---- TIME-BASED SANITY CLAMP ----
+        # time-based sanity clamp: step cannot exceed plausible speed * time gap
         dt_sec = g["fixtime"].diff().dt.total_seconds().fillna(0.0)
         max_km = (MAX_PLAUSIBLE_SPEED_KMH * (dt_sec / 3600.0)) * SANITY_BUFFER
-
-        # if dt is 0 (duplicate timestamps), allow 0 only
         max_km = max_km.replace([np.inf, -np.inf], np.nan).fillna(0.0).clip(lower=0.0)
 
         step_km = np.minimum(step_km.values, max_km.values)
 
+        # Build increasing curve
+        cumulative_km = np.cumsum(step_km)
+
         d.loc[g.index, "distance_step_km"] = step_km
+        d.loc[g.index, "distance_travelled_km"] = cumulative_km
 
     return d
 
 
-dist_step_df = build_distance_step_over_time(df)
+dist_time_df = build_distance_over_time_using_distance(df)
 
 
 # =============================
@@ -422,6 +419,8 @@ with tab_overview:
             total_dist = float(td.max() - td.min())
         if np.isnan(total_dist):
             dd = g["distance"].dropna()
+            # NOTE: this sum is in "raw units" from attributes.distance
+            # you believe it is meters; we keep existing logic unchanged in Overview, per your request.
             total_dist = float(dd.sum()) if len(dd) else np.nan
 
         avg_daily_dist = total_dist / num_days if (not np.isnan(total_dist) and num_days > 0) else np.nan
@@ -451,18 +450,19 @@ with tab_graphs:
         use_container_width=True,
     )
 
+    # --- UPDATED GRAPH (USING distance increments in meters -> cumulative km) ---
     st.markdown("### 2) Distance travelled over time")
     st.caption(
-        "This now plots **distance travelled between consecutive readings** using totalDistance deltas. "
-        "It automatically converts meters to km and clamps impossible spikes using the time gap between points."
+        "This is now computed using `attributes.distance` (treated as meters travelled since the previous point). "
+        "We convert meters to km and plot a cumulative increasing curve."
     )
     st.altair_chart(
         alt_line(
-            dist_step_df.dropna(subset=["fixtime", "distance_step_km"]),
+            dist_time_df.dropna(subset=["fixtime", "distance_travelled_km"]),
             "fixtime:T",
-            "distance_step_km:Q",
+            "distance_travelled_km:Q",
             "deviceid:N",
-            "Distance travelled over time (per reading)",
+            "Distance travelled over time (cumulative from attributes.distance)",
             "Distance travelled (km)",
         ),
         use_container_width=True,
@@ -653,7 +653,7 @@ with tab_popular:
             data=hotspot,
             get_position="[lon_bin, lat_bin]",
             get_radius="count * 6",
-            get_fill_color=[255, 165, 0],
+            get_fill_color=[255, 165, 0],  # ORANGE
             pickable=True,
         )
 
@@ -697,7 +697,7 @@ with tab_route:
             data=path_df,
             get_path="path",
             get_width=7,
-            get_color=[0, 255, 255],
+            get_color=[0, 255, 255],  # CYAN for visibility
             pickable=False,
         )
 
