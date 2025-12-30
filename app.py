@@ -769,12 +769,15 @@ with tab_route:
         path = route[["longitude", "latitude"]].values.tolist()
         path_df = pd.DataFrame([{"deviceid": int(one_device), "path": path}])
 
+        # ✅ ONLY CHANGE: make the route line bold + neon blue
         path_layer = pdk.Layer(
             "PathLayer",
             data=path_df,
             get_path="path",
-            get_width=7,
-            get_color=[0, 255, 255],  # CYAN for visibility
+            get_width=14,              # thicker/bolder
+            width_min_pixels=6,        # keeps it bold at different zoom levels
+            rounded=True,
+            get_color=[0, 255, 255],   # neon blue (cyan)
             pickable=False,
         )
 
