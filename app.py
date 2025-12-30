@@ -438,6 +438,9 @@ tab_overview, tab_graphs, tab_charging, tab_popular, tab_route = st.tabs(
 with tab_overview:
     st.subheader("Overview (per selected bike)")
 
+    # ✅ ONLY CHANGE: show chassis number (tc_devices.name) instead of deviceid in the table
+    deviceid_to_chassis = dict(zip(device_map_df["deviceid"], device_map_df["device_name"])) if not device_map_df.empty else {}
+
     rows = []
     for deviceid, g in df.groupby("deviceid"):
         g = g.sort_values("fixtime")
@@ -459,7 +462,7 @@ with tab_overview:
         avg_daily_dist = total_dist / num_days if (not np.isnan(total_dist) and num_days > 0) else np.nan
 
         rows.append({
-            "deviceid": int(deviceid),
+            "Chassis number": deviceid_to_chassis.get(int(deviceid), str(int(deviceid))),
             "Avg daily distance (km)": avg_daily_dist,
             "Avg speed (km/h) [zeros ignored]": avg_speed,
             "Max speed (km/h)": max_speed,
@@ -467,7 +470,7 @@ with tab_overview:
             "Points": int(len(g)),
         })
 
-    st.dataframe(pd.DataFrame(rows).sort_values("deviceid"), use_container_width=True)
+    st.dataframe(pd.DataFrame(rows).sort_values("Chassis number"), use_container_width=True)
 
 
 # =============================
