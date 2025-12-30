@@ -780,7 +780,7 @@ with tab_route:
             "PathLayer",
             data=path_df,
             get_path="path",
-            get_width=6,               # thinner
+            get_width=3,               # thinner
             width_min_pixels=3,        # still visible at different zoom levels
             rounded=True,
             get_color=[0, 255, 255],   # neon blue (cyan)
