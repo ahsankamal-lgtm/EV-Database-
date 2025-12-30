@@ -679,15 +679,59 @@ with tab_popular:
             .head(top_n)
         )
 
-        hotspot["label"] = hotspot["count"].apply(lambda c: f"Visits: {int(c)}")
+        hotspot["label"] = hotspot.apply(
+            lambda r: f"Visits: {int(r['count'])}\nLat: {r['lat_bin']}\nLon: {r['lon_bin']}",
+            axis=1
+        )
 
-        layer = pdk.Layer(
+        # ---- NEW: radar style + accurate dots (no huge orange circles) ----
+        hotspot["count"] = pd.to_numeric(hotspot["count"], errors="coerce").fillna(1).astype(int)
+
+        # Opacity curve: more visits = darker blue (no stacking required)
+        max_c = int(hotspot["count"].max()) if len(hotspot) else 1
+        denom = np.log1p(max_c) if max_c > 0 else 1.0
+        hotspot["alpha"] = (40 + (np.log1p(hotspot["count"]) / denom) * 180).clip(40, 220)
+
+        # Sizes in meters
+        DOT_RADIUS = 18      # small, accurate location dot
+        HALO_RADIUS = 160    # soft radar halo
+
+        halo_layer = pdk.Layer(
             "ScatterplotLayer",
             data=hotspot,
             get_position="[lon_bin, lat_bin]",
-            get_radius="count * 6",
-            get_fill_color=[255, 165, 0],  # ORANGE
+            get_radius=HALO_RADIUS,
+            stroked=False,
+            filled=True,
+            pickable=False,
+            # light blue glow
+            get_fill_color=[80, 160, 255, 25],
+        )
+
+        ring_layer = pdk.Layer(
+            "ScatterplotLayer",
+            data=hotspot,
+            get_position="[lon_bin, lat_bin]",
+            get_radius=HALO_RADIUS,
+            stroked=True,
+            filled=False,
+            pickable=False,
+            line_width_min_pixels=1,
+            get_line_color=[80, 160, 255, 120],
+        )
+
+        dot_layer = pdk.Layer(
+            "ScatterplotLayer",
+            data=hotspot,
+            get_position="[lon_bin, lat_bin]",
+            get_radius=DOT_RADIUS,
+            stroked=True,
+            filled=True,
             pickable=True,
+            line_width_min_pixels=1,
+            # darker blue as count increases (alpha column drives intensity)
+            get_fill_color="[30, 120, 255, alpha]",
+            get_line_color=[10, 60, 160, 180],
         )
 
         view_state = pdk.ViewState(
@@ -700,7 +744,7 @@ with tab_popular:
         st.pydeck_chart(
             pdk.Deck(
                 initial_view_state=view_state,
-                layers=[layer],
+                layers=[halo_layer, ring_layer, dot_layer],
                 tooltip={"text": "{label}"},
             )
         )
