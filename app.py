@@ -682,6 +682,9 @@ with tab_popular:
             .head(top_n)
         )
 
+        # ✅ ONLY CHANGE: consider popular only if visits > 20
+        hotspot = hotspot[hotspot["count"] > 20].copy()
+
         hotspot["label"] = hotspot.apply(
             lambda r: f"Visits: {int(r['count'])}\nLat: {r['lat_bin']}\nLon: {r['lon_bin']}",
             axis=1
@@ -772,13 +775,13 @@ with tab_route:
         path = route[["longitude", "latitude"]].values.tolist()
         path_df = pd.DataFrame([{"deviceid": int(one_device), "path": path}])
 
-        # ✅ ONLY CHANGE: make the route line bold + neon blue
+        # ✅ ONLY CHANGE: decrease line width to better match street width (keep neon blue)
         path_layer = pdk.Layer(
             "PathLayer",
             data=path_df,
             get_path="path",
-            get_width=14,              # thicker/bolder
-            width_min_pixels=6,        # keeps it bold at different zoom levels
+            get_width=6,               # thinner
+            width_min_pixels=3,        # still visible at different zoom levels
             rounded=True,
             get_color=[0, 255, 255],   # neon blue (cyan)
             pickable=False,
