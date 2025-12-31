@@ -450,23 +450,20 @@ with tab_overview:
         max_speed = float(g["speed_kmh"].max()) if g["speed_kmh"].notna().any() else np.nan
 
         total_dist = np.nan
-        td = g["totalDistance"].dropna()
-        if len(td) >= 2:
-            total_dist = float(td.max() - td.min())
-        if np.isnan(total_dist):
-            dd = g["distance"].dropna()
-            # NOTE: this sum is in "raw units" from attributes.distance
-            # you believe it is meters; we keep existing logic unchanged in Overview, per your request.
-            total_dist = float(dd.sum()) if len(dd) else np.nan
 
-        avg_daily_dist = total_dist / num_days if (not np.isnan(total_dist) and num_days > 0) else np.nan
+        # ✅ ONLY CHANGE: do NOT use totalDistance; use attributes.distance (meters) only
+        dd = g["distance"].dropna()
+        total_dist = float(dd.sum()) if len(dd) else np.nan  # meters
+
+        # ✅ ONLY CHANGE: meters -> km, then divide by number of days
+        avg_daily_dist = (total_dist / 1000.0) / num_days if (not np.isnan(total_dist) and num_days > 0) else np.nan
 
         rows.append({
             "Chassis number": deviceid_to_chassis.get(int(deviceid), str(int(deviceid))),
             "Avg daily distance (km)": avg_daily_dist,
             "Avg speed (km/h) [zeros ignored]": avg_speed,
             "Max speed (km/h)": max_speed,
-            "Total distance in range (km)": total_dist,
+            "Total distance in range (km)": (total_dist / 1000.0) if not np.isnan(total_dist) else np.nan,
             "Points": int(len(g)),
         })
 
