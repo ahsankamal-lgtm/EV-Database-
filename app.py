@@ -18,9 +18,16 @@ st.set_page_config(page_title="🛸 EV GPS Analysis App", layout="wide")
 # =============================
 CUSTOM_CSS = """
 <style>
-/* --- Page background: blue -> turquoise gradient --- */
+/* --- Force full-page canvas and remove any default white margins --- */
+html, body, [data-testid="stAppViewContainer"], [data-testid="stAppViewContainer"] > .main {
+  height: 100%;
+}
+
+/* --- Page background: blue gradient (full page, like your other app) --- */
 .stApp {
-  background: linear-gradient(135deg, #001F3F 0%, #0074D9 50%, #7FDBFF 100%);
+  min-height: 100vh;
+  background: linear-gradient(135deg, #001F3F 0%, #0074D9 55%, #7FDBFF 100%) !important;
+  background-attachment: fixed !important;
 }
 
 /* --- Make main content area look clean on gradient --- */
@@ -43,13 +50,16 @@ section[data-testid="stSidebar"] p {
   color: #0B1B2B;
 }
 
-/* --- Headings --- */
-h1, h2, h3, h4, h5, h6 {
-  color: #FFFFFF;
+/* --- Headings (INCLUDING Streamlit title) --- */
+h1, h2, h3, h4, h5, h6,
+[data-testid="stTitle"] {
+  color: #FFFFFF !important;
   letter-spacing: 0.3px;
 }
+
+/* --- Caption color (keep readable on gradient) --- */
 div[data-testid="stCaptionContainer"] {
-  color: rgba(6, 24, 38, 0.75);
+  color: rgba(255, 255, 255, 0.80) !important;
 }
 
 /* --- Card utility --- */
