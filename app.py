@@ -45,8 +45,8 @@ section[data-testid="stSidebar"] p {
 
 /* --- Headings --- */
 h1, h2, h3, h4, h5, h6 {
-  color: #061826;
-  letter-spacing: 0.2px;
+  color: #FFFFFF;
+  letter-spacing: 0.3px;
 }
 div[data-testid="stCaptionContainer"] {
   color: rgba(6, 24, 38, 0.75);
