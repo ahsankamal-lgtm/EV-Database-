@@ -49,40 +49,38 @@ html, body,
   background: transparent !important;
 }
 
-/* ---------- GLOBAL TEXT (Turquoise like your screenshot) ---------- */
+/* ---------- GLOBAL TEXT (ALL BLACK) ---------- */
 body, p, span, div, label, li {
-  color: #D8FFFB !important;
+  color: #000000 !important;
 }
 
-/* ---------- MAIN HEADING GRADIENT (for headings in general) ---------- */
-h1, h2, h3, h4, h5, h6 {
-  background: linear-gradient(90deg, #5EEAD4, #2ED9C3, #7FDBFF);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  letter-spacing: 0.4px;
-}
-
-/* ---------- OUTLINED GRADIENT TITLE (fill = gradient, outline = black ONLY) ---------- */
+/* ---------- TITLE GRADIENT ONLY (Turquoise/Blue -> White) ---------- */
 .gradient-title {
   display: inline-block;
   margin: 0;
   font-weight: 800;
   letter-spacing: 0.5px;
 
-  background: linear-gradient(90deg, #5EEAD4, #2ED9C3, #7FDBFF);
+  background: linear-gradient(90deg, #2ED9C3 0%, #0074D9 55%, #FFFFFF 100%);
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent !important;
 
-  /* outline only */
-  -webkit-text-stroke: 2px #000000;
-  text-stroke: 2px #000000;
+  /* No border/outline */
+  -webkit-text-stroke: 0 !important;
+  text-stroke: 0 !important;
 }
 
-/* ---------- CAPTION ---------- */
+/* ---------- HEADINGS (BLACK, NOT GRADIENT) ---------- */
+h1, h2, h3, h4, h5, h6 {
+  color: #000000 !important;
+  background: none !important;
+  -webkit-text-fill-color: #000000 !important;
+}
+
+/* ---------- CAPTION (BLACK) ---------- */
 div[data-testid="stCaptionContainer"] {
-  color: rgba(220, 255, 250, 0.85) !important;
+  color: #000000 !important;
 }
 
 /* ---------- CONTENT WIDTH ---------- */
@@ -99,7 +97,7 @@ section[data-testid="stSidebar"] {
   border-right: 1px solid rgba(0,0,0,0.08);
 }
 section[data-testid="stSidebar"] * {
-  color: #0B1B2B !important;
+  color: #000000 !important;
 }
 
 /* ---------- CARD ---------- */
@@ -152,9 +150,10 @@ def card_close():
     st.markdown("</div>", unsafe_allow_html=True)
 
 
-# Title: gradient fill + black outline (NOT black fill)
+# Title: gradient fill (turquoise/blue/white) with NO border
 st.markdown('<h1 class="gradient-title">🛸 EV Analytics App</h1>', unsafe_allow_html=True)
 st.caption("Keyed by tc_positions.deviceid. Timeline uses fixtime. Noise points are excluded by default.")
+
 
 
 # =============================
