@@ -8,16 +8,6 @@ import altair as alt
 import pydeck as pdk
 
 
-import json
-from datetime import datetime, date, time, timedelta
-
-import numpy as np
-import pandas as pd
-import streamlit as st
-import altair as alt
-import pydeck as pdk
-
-
 # =============================
 # UI / CONFIG
 # =============================
@@ -53,20 +43,43 @@ html, body,
   background-attachment: fixed !important;
 }
 
-/* Remove Streamlit top bars background */
+/* Remove Streamlit top bars background (keep nav/menu visible) */
 [data-testid="stHeader"],
 [data-testid="stToolbar"] {
   background: transparent !important;
 }
 
-/* ---------- GLOBAL TEXT (Turquoise Gradient) ---------- */
+/* ---------- GLOBAL TEXT (Readable on gradient) ---------- */
 body, p, span, div, label {
   color: #D8FFFB;
 }
 
-/* ---------- MAIN HEADING GRADIENT ---------- */
-h1, h2, h3, h4, h5, h6,
-[data-testid="stTitle"] {
+/* ---------- OUTLINED GRADIENT TITLE CLASS ---------- */
+.gradient-title {
+  font-size: 3rem;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  margin: 0;
+
+  /* Gradient fill */
+  background: linear-gradient(90deg, #5EEAD4, #2ED9C3, #7FDBFF);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+
+  /* Black border around each letter */
+  -webkit-text-stroke: 1.5px #000000;
+
+  /* Fallback outline */
+  text-shadow:
+    -1px -1px 0 #000,
+     1px -1px 0 #000,
+    -1px  1px 0 #000,
+     1px  1px 0 #000;
+}
+
+/* ---------- HEADINGS (keep your gradient style) ---------- */
+h1, h2, h3, h4, h5, h6 {
   background: linear-gradient(90deg, #5EEAD4, #2ED9C3, #7FDBFF);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -146,7 +159,8 @@ def card_close():
     st.markdown("</div>", unsafe_allow_html=True)
 
 
-st.title("🛸 EV Analytics App")
+# --- Title with outlined gradient text (black border per letter) ---
+st.markdown('<h1 class="gradient-title">🛸 EV Analytics App</h1>', unsafe_allow_html=True)
 st.caption("Keyed by tc_positions.deviceid. Timeline uses fixtime. Noise points are excluded by default.")
 
 
