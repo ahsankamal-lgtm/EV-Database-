@@ -378,15 +378,16 @@ if not device_map_df.empty and "device_name" not in df.columns:
 # =============================
 def build_distance_over_time_using_distance(raw_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Builds an *increasing* distance travelled curve by using `attributes.distance` as an increment.
+    Builds an increasing distance travelled curve using ONLY `attributes.distance` (meters).
 
-    Assumption (based on your dataset):
-    - `distance` is the distance travelled since the previous point (increment)
-    - it is in METERS
-    Therefore:
-    - per_row_km = distance / 1000
-    - cumulative_km = cumsum(per_row_km)
-    Also applies sanity clamping based on time delta between points.
+    Requirements implemented:
+    - Do NOT use totalDistance at all.
+    - Use ONLY attributes.distance (already meters).
+    - Convert meters -> km.
+    - Cumulative sum per device within the selected date range.
+    - The curve starts from the first cumulative value in the selected range
+      (it does not need to start at 0).
+    - Keep the same time-based sanity clamp logic already present.
     """
     d = raw_df.dropna(subset=["fixtime", "deviceid"]).copy()
     if d.empty:
@@ -401,7 +402,7 @@ def build_distance_over_time_using_distance(raw_df: pd.DataFrame) -> pd.DataFram
     for deviceid, g in d.groupby("deviceid", sort=False):
         g = g.sort_values("fixtime").copy()
 
-        # meters -> km (treating distance as increment)
+        # meters -> km (treating distance as increment between points)
         step_km = (g["distance"].astype(float) / 1000.0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
         step_km = step_km.clip(lower=0.0)
 
@@ -412,7 +413,7 @@ def build_distance_over_time_using_distance(raw_df: pd.DataFrame) -> pd.DataFram
 
         step_km = np.minimum(step_km.values, max_km.values)
 
-        # Build increasing curve
+        # Cumulative curve for the selected range (do NOT force start to 0)
         cumulative_km = np.cumsum(step_km)
 
         d.loc[g.index, "distance_step_km"] = step_km
@@ -486,8 +487,8 @@ with tab_graphs:
     # --- UPDATED GRAPH (USING distance increments in meters -> cumulative km) ---
     st.markdown("### 2) Distance travelled over time")
     st.caption(
-        "This is now computed using `attributes.distance` (treated as meters travelled since the previous point). "
-        "We convert meters to km and plot a cumulative increasing curve."
+        "This is computed using `attributes.distance` only (meters travelled between points). "
+        "We convert meters to km and plot a cumulative increasing curve for the selected dates."
     )
     st.altair_chart(
         alt_line(
