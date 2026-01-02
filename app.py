@@ -69,7 +69,7 @@ h1.gradient-title {
   font-weight: 800;
   letter-spacing: 0.5px;
 
-  background: linear-gradient(90deg, #2ED9C3 45%, #0074D9 55%) !important;
+  background: linear-gradient(90deg, #FFFFFF 100%) !important;
   -webkit-background-clip: text !important;
   background-clip: text !important;
   -webkit-text-fill-color: transparent !important;
