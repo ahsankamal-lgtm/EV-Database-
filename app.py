@@ -54,28 +54,29 @@ body, p, span, div, label, li {
   color: #000000 !important;
 }
 
+/* ---------- HEADINGS (BLACK, NOT GRADIENT) ---------- */
+/* IMPORTANT: exclude the custom title so it stays gradient */
+h1:not(.gradient-title), h2, h3, h4, h5, h6 {
+  color: #000000 !important;
+  background: none !important;
+  -webkit-text-fill-color: #000000 !important;
+}
+
 /* ---------- TITLE GRADIENT ONLY (Turquoise/Blue -> White) ---------- */
-.gradient-title {
+h1.gradient-title {
   display: inline-block;
   margin: 0;
   font-weight: 800;
   letter-spacing: 0.5px;
 
-  background: linear-gradient(90deg, #2ED9C3 0%, #0074D9 55%, #FFFFFF 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
+  background: linear-gradient(90deg, #2ED9C3 0%, #0074D9 55%, #FFFFFF 100%) !important;
+  -webkit-background-clip: text !important;
+  background-clip: text !important;
   -webkit-text-fill-color: transparent !important;
 
   /* No border/outline */
   -webkit-text-stroke: 0 !important;
   text-stroke: 0 !important;
-}
-
-/* ---------- HEADINGS (BLACK, NOT GRADIENT) ---------- */
-h1, h2, h3, h4, h5, h6 {
-  color: #000000 !important;
-  background: none !important;
-  -webkit-text-fill-color: #000000 !important;
 }
 
 /* ---------- CAPTION (BLACK) ---------- */
@@ -153,6 +154,7 @@ def card_close():
 # Title: gradient fill (turquoise/blue/white) with NO border
 st.markdown('<h1 class="gradient-title">🛸 EV Analytics App</h1>', unsafe_allow_html=True)
 st.caption("Keyed by tc_positions.deviceid. Timeline uses fixtime. Noise points are excluded by default.")
+
 
 
 
