@@ -1,21 +1,27 @@
 import json
 from datetime import datetime, date, time, timedelta
+import hmac
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 import altair as alt
 import pydeck as pdk
-import hmac
+
+
+# =============================
+# UI / CONFIG
+# =============================
+st.set_page_config(page_title="🛸 EV GPS Analysis App", layout="wide")
+
 
 # -----------------------------
 # LOGIN HELPERS
 # -----------------------------
 def _check_password(username: str, password: str) -> bool:
     """
-    Validates username/password against Streamlit secrets.
     Put these in Streamlit Cloud -> App -> Settings -> Secrets:
-    
+
     [auth]
     username = "admin"
     password = "yourStrongPassword"
@@ -27,22 +33,16 @@ def _check_password(username: str, password: str) -> bool:
     except Exception:
         return False
 
-    # constant-time compare to avoid timing leaks
     return hmac.compare_digest(username, valid_user) and hmac.compare_digest(password, valid_pass)
 
 
 def login_gate() -> None:
-    """
-    Shows a landing/login page until the user logs in.
-    Once logged in, allows the rest of the app to run.
-    """
     if "logged_in" not in st.session_state:
         st.session_state.logged_in = False
 
     if st.session_state.logged_in:
-        return  # allow app to continue
+        return
 
-    # --- Landing page UI ---
     st.markdown("## Welcome")
     st.markdown("Please sign in to continue.")
 
@@ -58,13 +58,8 @@ def login_gate() -> None:
         else:
             st.error("Invalid User ID or Password.")
 
-    st.stop()  # IMPORTANT: prevents the rest of the app from loading
+    st.stop()
 
-
-# =============================
-# UI / CONFIG
-# =============================
-st.set_page_config(page_title="🛸 EV GPS Analysis App", layout="wide")
 
 # =============================
 # AESTHETICS (UI ONLY)
@@ -122,19 +117,18 @@ h1.gradient-title {
   font-weight: 800;
   letter-spacing: 0.5px;
 
-  background: linear-gradient(90deg, #FFFFFF 100%) !important;
+  background: linear-gradient(90deg, #2ED9C3 0%, #0074D9 55%, #FFFFFF 100%) !important;
   -webkit-background-clip: text !important;
   background-clip: text !important;
   -webkit-text-fill-color: transparent !important;
 
-  /* No border/outline */
   -webkit-text-stroke: 0 !important;
   text-stroke: 0 !important;
 }
 
 /* ---------- CAPTION (BLACK) ---------- */
 div[data-testid="stCaptionContainer"] {
-  color: #FFFFFF !important;
+  color: #000000 !important;
 }
 
 /* ---------- CONTENT WIDTH ---------- */
@@ -197,6 +191,10 @@ div[data-testid="stAlert"] {
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 
+# ✅ CALL LOGIN GATE HERE (so nothing loads unless logged in)
+login_gate()
+
+
 def card_open():
     st.markdown('<div class="card">', unsafe_allow_html=True)
 
@@ -206,6 +204,7 @@ def card_close():
 
 # Title: gradient fill (turquoise/blue/white) with NO border
 st.markdown('<h1 class="gradient-title">🚴‍♀️ EV Analytics App</h1>', unsafe_allow_html=True)
+st.caption("Keyed by tc_positions.deviceid. Timeline uses fixtime. Noise points are excluded by default.")
 
 
 # =============================
