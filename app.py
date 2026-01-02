@@ -21,100 +21,54 @@ st.caption("Keyed by tc_positions.deviceid. Timeline uses fixtime. Noise points 
 # =============================
 DB_SCHEMA = "traccar_new"
 POSITIONS_TABLE = f"{DB_SCHEMA}.tc_positions"
-DEVICES_TABLE = f"{DB_SCHEMA}.tc_devices"  # <-- NEW (for name mapping)
+DEVICES_TABLE = f"{DB_SCHEMA}.tc_devices"
 MAX_BIKES = 5
 NOISE_CUTOFF = datetime(2000, 1, 1)
-
-# sanity clamp for per-reading increment derived from distance (meters)
-MAX_PLAUSIBLE_SPEED_KMH = 120.0
-SANITY_BUFFER = 1.5
 
 
 # =============================
 # HELPERS
 # =============================
 def dt_range_inclusive(start_d: date, end_d: date):
-    start_dt = datetime.combine(start_d, time.min)
-    end_dt = datetime.combine(end_d, time.max)
-    return start_dt, end_dt
+    return (
+        datetime.combine(start_d, time.min),
+        datetime.combine(end_d, time.max),
+    )
 
 
 def knots_to_kmh(knots):
     try:
-        if knots is None:
-            return np.nan
         return float(knots) * 1.852
     except Exception:
         return np.nan
 
 
 def safe_json_load(x):
-    if x is None:
+    try:
+        return json.loads(x) if isinstance(x, str) else {}
+    except Exception:
         return {}
-    if isinstance(x, dict):
-        return x
-    if isinstance(x, (bytes, bytearray)):
-        try:
-            x = x.decode("utf-8", errors="ignore")
-        except Exception:
-            return {}
-    if isinstance(x, str):
-        x = x.strip()
-        if not x:
-            return {}
-        try:
-            return json.loads(x)
-        except Exception:
-            return {}
-    return {}
 
 
 def to_bool(x):
-    if x is None or (isinstance(x, float) and np.isnan(x)):
+    if x is None:
         return None
-    s = str(x).strip().lower()
-    if s in ("true", "1", "yes"):
+    s = str(x).lower()
+    if s in ("true", "1"):
         return True
-    if s in ("false", "0", "no"):
+    if s in ("false", "0"):
         return False
     return None
 
 
-def format_hms(seconds: float) -> str:
-    if seconds is None or (isinstance(seconds, float) and np.isnan(seconds)) or seconds <= 0:
-        return "0:00:00"
-    seconds = int(round(seconds))
-    h = seconds // 3600
-    m = (seconds % 3600) // 60
-    s = seconds % 60
-    return f"{h}:{m:02d}:{s:02d}"
-
-
-def split_session_by_day(start_ts: pd.Timestamp, end_ts: pd.Timestamp):
-    if pd.isna(start_ts) or pd.isna(end_ts) or end_ts <= start_ts:
-        return []
-
-    out = []
-    cur = start_ts
-
-    while cur.date() < end_ts.date():
-        day_end = pd.Timestamp(datetime.combine(cur.date(), time.max))
-        seg_end = min(day_end, end_ts)
-        out.append((cur.date(), (seg_end - cur).total_seconds()))
-        cur = pd.Timestamp(datetime.combine(cur.date() + timedelta(days=1), time.min))
-
-    out.append((cur.date(), (end_ts - cur).total_seconds()))
-    return out
-
-
-def alt_line(df, x, y, color, title, y_title=None):
+def alt_line(df, x, y, color, title, y_title):
     return (
         alt.Chart(df)
         .mark_line()
         .encode(
             x=alt.X(x, title="Time"),
-            y=alt.Y(y, title=y_title or y),
-            color=alt.Color(color, legend=alt.Legend(title="Device ID")),
+            y=alt.Y(y, title=y_title),
+            color=alt.Color(color, legend=alt.Legend(title="Bike")),
             tooltip=[color, x, y],
         )
         .properties(height=360, title=title)
@@ -123,161 +77,65 @@ def alt_line(df, x, y, color, title, y_title=None):
 
 
 # =============================
-# DB DRIVER AUTO-DETECT
+# DATABASE CONNECTION
 # =============================
-DB_DRIVER = None
-try:
-    import pymysql  # type: ignore
-    DB_DRIVER = "pymysql"
-except Exception:
-    try:
-        import mysql.connector  # type: ignore
-        DB_DRIVER = "mysql-connector"
-    except Exception:
-        DB_DRIVER = None
-
-if DB_DRIVER is None:
-    st.error(
-        "Missing MySQL driver in the Streamlit environment.\n\n"
-        "Fix:\n"
-        "1) Ensure `requirements.txt` is in the repo ROOT (same folder as app.py)\n"
-        "2) Put this inside requirements.txt:\n\n"
-        "streamlit\npandas\nnumpy\naltair\npydeck\npymysql\nmysql-connector-python\n\n"
-        "Then redeploy / reboot the app from Streamlit Cloud."
-    )
-    st.stop()
-
+import pymysql
 
 @st.cache_resource
-def get_conn_params():
+def get_conn():
     cfg = st.secrets["mysql"]
-    return {
-        "host": cfg["host"],
-        "port": int(cfg.get("port", 3306)),
-        "user": cfg["username"],
-        "password": cfg["password"],
-        "database": cfg["database"],
-    }
-
-
-def fetch_df(query: str, params: tuple):
-    cfg = get_conn_params()
-
-    if DB_DRIVER == "pymysql":
-        import pymysql  # type: ignore
-        conn = pymysql.connect(
-            host=cfg["host"],
-            port=cfg["port"],
-            user=cfg["user"],
-            password=cfg["password"],
-            database=cfg["database"],
-            cursorclass=pymysql.cursors.DictCursor,
-            autocommit=True,
-        )
-        try:
-            with conn.cursor() as cur:
-                cur.execute(query, params)
-                rows = cur.fetchall()
-            return pd.DataFrame(rows)
-        finally:
-            conn.close()
-
-    # mysql-connector fallback
-    import mysql.connector  # type: ignore
-    conn = mysql.connector.connect(
+    return pymysql.connect(
         host=cfg["host"],
-        port=cfg["port"],
-        user=cfg["user"],
+        port=int(cfg.get("port", 3306)),
+        user=cfg["username"],
         password=cfg["password"],
         database=cfg["database"],
+        cursorclass=pymysql.cursors.DictCursor,
+        autocommit=True,
     )
-    try:
-        cur = conn.cursor(dictionary=True)
+
+
+def fetch_df(query, params):
+    conn = get_conn()
+    with conn.cursor() as cur:
         cur.execute(query, params)
-        rows = cur.fetchall()
-        cur.close()
-        return pd.DataFrame(rows)
-    finally:
-        conn.close()
+        return pd.DataFrame(cur.fetchall())
 
 
 # =============================
-# DEVICE LIST (NOW USING tc_devices.name IN UI)
+# DEVICE MAP
 # =============================
 @st.cache_data(ttl=60)
 def fetch_device_map():
-    """
-    Returns a DataFrame with columns:
-      - deviceid (tc_devices.id)
-      - device_name (tc_devices.name)
-    Only includes devices that actually have positions after NOISE_CUTOFF.
-    """
     q = f"""
-        SELECT DISTINCT
-            d.id   AS deviceid,
-            d.name AS device_name
+        SELECT DISTINCT d.id AS deviceid, d.name AS device_name
         FROM {DEVICES_TABLE} d
-        INNER JOIN {POSITIONS_TABLE} p
-            ON p.deviceid = d.id
+        JOIN {POSITIONS_TABLE} p ON p.deviceid = d.id
         WHERE p.fixtime >= %s
-        ORDER BY d.name;
+        ORDER BY d.name
     """
-    df_map = fetch_df(q, (NOISE_CUTOFF,))
-    if df_map.empty:
-        return df_map
-
-    df_map["deviceid"] = pd.to_numeric(df_map["deviceid"], errors="coerce")
-    df_map["device_name"] = df_map["device_name"].astype(str)
-    df_map = df_map.dropna(subset=["deviceid", "device_name"]).copy()
-    df_map["deviceid"] = df_map["deviceid"].astype(int)
-
-    # De-dupe names (in case of unexpected duplicates)
-    df_map = df_map.drop_duplicates(subset=["deviceid"], keep="first")
-    return df_map
+    return fetch_df(q, (NOISE_CUTOFF,))
 
 
 device_map_df = fetch_device_map()
-device_name_options = device_map_df["device_name"].tolist() if not device_map_df.empty else []
+name_to_id = dict(zip(device_map_df.device_name, device_map_df.deviceid))
 
 
 # =============================
-# SIDEBAR FILTERS
+# SIDEBAR
 # =============================
 st.sidebar.header("Filters")
 
-today = date.today()
-default_start = today - timedelta(days=7)
-default_end = today
+start_date = st.sidebar.date_input("Start date", date.today() - timedelta(days=7))
+end_date = st.sidebar.date_input("End date", date.today())
 
-start_date = st.sidebar.date_input("Start date", value=default_start)
-end_date = st.sidebar.date_input("End date", value=default_end)
-
-if start_date > end_date:
-    st.sidebar.error("Start date must be <= End date.")
-    st.stop()
-
-# --- CHANGED: Select names instead of IDs ---
-selected_device_names = st.sidebar.multiselect(
-    "Select up to 5 bike names",
-    options=device_name_options,
-    default=device_name_options[:1] if device_name_options else [],
+selected_names = st.sidebar.multiselect(
+    "Select up to 5 bikes",
+    options=device_map_df.device_name.tolist(),
+    default=device_map_df.device_name.head(1).tolist(),
 )
 
-if len(selected_device_names) == 0:
-    st.info("Select at least one bike name to begin.")
-    st.stop()
-
-if len(selected_device_names) > MAX_BIKES:
-    st.sidebar.error(f"Please select at most {MAX_BIKES} bikes.")
-    st.stop()
-
-# Map selected names -> device IDs (used everywhere else)
-name_to_id = dict(zip(device_map_df["device_name"], device_map_df["deviceid"])) if not device_map_df.empty else {}
-selected_devices = [int(name_to_id[n]) for n in selected_device_names if n in name_to_id]
-
-if len(selected_devices) == 0:
-    st.warning("No matching device IDs found for the selected names.")
-    st.stop()
+selected_devices = [name_to_id[n] for n in selected_names]
 
 start_dt, end_dt = dt_range_inclusive(start_date, end_date)
 num_days = (end_date - start_date).days + 1
@@ -287,536 +145,96 @@ num_days = (end_date - start_date).days + 1
 # LOAD POSITIONS
 # =============================
 @st.cache_data(ttl=60)
-def fetch_positions(device_list, start_dt, end_dt):
-    device_list = [int(x) for x in device_list]
-    placeholders = ",".join(["%s"] * len(device_list))
-
+def fetch_positions(device_ids, start_dt, end_dt):
+    placeholders = ",".join(["%s"] * len(device_ids))
     q = f"""
         SELECT
-            id,
-            protocol,
             deviceid,
-            servertime,
-            devicetime,
             fixtime,
-            valid,
             latitude,
             longitude,
-            altitude,
             speed,
-            course,
-            address,
-            attributes,
-
-            JSON_UNQUOTE(JSON_EXTRACT(attributes, '$.event')) AS event,
-            JSON_UNQUOTE(JSON_EXTRACT(attributes, '$.ignition')) AS ignition_raw,
-            JSON_UNQUOTE(JSON_EXTRACT(attributes, '$.door')) AS door_raw,
-            JSON_UNQUOTE(JSON_EXTRACT(attributes, '$.motion')) AS motion_raw,
-
-            CAST(JSON_UNQUOTE(JSON_EXTRACT(attributes, '$.fuel1')) AS DECIMAL(10,4)) AS fuel1,
-            CAST(JSON_UNQUOTE(JSON_EXTRACT(attributes, '$.fuel2')) AS DECIMAL(18,4)) AS fuel2,
-            CAST(JSON_UNQUOTE(JSON_EXTRACT(attributes, '$.temp1')) AS DECIMAL(18,0)) AS temp1,
-
-            CAST(JSON_UNQUOTE(JSON_EXTRACT(attributes, '$.distance')) AS DECIMAL(18,8)) AS distance,
-            CAST(JSON_UNQUOTE(JSON_EXTRACT(attributes, '$.totalDistance')) AS DECIMAL(18,8)) AS totalDistance
-
+            JSON_UNQUOTE(JSON_EXTRACT(attributes, '$.distance')) AS distance,
+            JSON_UNQUOTE(JSON_EXTRACT(attributes, '$.fuel1')) AS fuel1,
+            JSON_UNQUOTE(JSON_EXTRACT(attributes, '$.door')) AS door
         FROM {POSITIONS_TABLE}
         WHERE deviceid IN ({placeholders})
           AND fixtime BETWEEN %s AND %s
-          AND fixtime >= %s
           AND valid = 1
-          AND latitude <> 0 AND longitude <> 0
-        ORDER BY deviceid, fixtime;
+        ORDER BY deviceid, fixtime
     """
-
-    params = tuple(device_list) + (start_dt, end_dt, NOISE_CUTOFF)
-    df = fetch_df(q, params)
-
-    if df.empty:
-        return df
-
-    for c in ["servertime", "devicetime", "fixtime"]:
-        df[c] = pd.to_datetime(df[c], errors="coerce")
-
+    df = fetch_df(q, tuple(device_ids) + (start_dt, end_dt))
+    df["fixtime"] = pd.to_datetime(df["fixtime"])
     df["speed_kmh"] = df["speed"].apply(knots_to_kmh)
-
-    df["ignition"] = df["ignition_raw"].apply(to_bool)
-    df["door"] = df["door_raw"].apply(to_bool)      # charging ON/OFF
-    df["motion"] = df["motion_raw"].apply(to_bool)
-
-    # Fallback parsing in case JSON_EXTRACT returns null
-    if df["fuel1"].isna().all() or df["door"].isna().all() or df["distance"].isna().all():
-        attrs = df["attributes"].apply(safe_json_load)
-        if df["fuel1"].isna().all():
-            df["fuel1"] = attrs.apply(lambda a: a.get("fuel1", np.nan))
-        if df["door"].isna().all():
-            df["door"] = attrs.apply(lambda a: a.get("door", None))
-        if df["temp1"].isna().all():
-            df["temp1"] = attrs.apply(lambda a: a.get("temp1", np.nan))
-        if df["distance"].isna().all():
-            df["distance"] = attrs.apply(lambda a: a.get("distance", np.nan))
-        if df["totalDistance"].isna().all():
-            df["totalDistance"] = attrs.apply(lambda a: a.get("totalDistance", np.nan))
-
+    df["distance"] = pd.to_numeric(df["distance"], errors="coerce").fillna(0)
     return df
 
 
-with st.spinner("Loading positions..."):
-    df = fetch_positions(selected_devices, start_dt, end_dt)
-
-if df.empty:
-    st.warning("No data returned for the selected filters (after noise/valid filtering). Try a wider date range.")
-    st.stop()
-
-# --- OPTIONAL (but kept minimal): add device_name column for reference/use later if needed ---
-if not device_map_df.empty and "device_name" not in df.columns:
-    df = df.merge(device_map_df, on="deviceid", how="left")
+df = fetch_positions(selected_devices, start_dt, end_dt)
+df = df.merge(device_map_df, on="deviceid", how="left")
 
 
 # =============================
-# NEW: DISTANCE TRAVELLED OVER TIME (USING attributes.distance IN METERS)
+# ✅ CLEAN DISTANCE–TIME LOGIC (FIXED)
 # =============================
-def build_distance_over_time_using_distance(raw_df: pd.DataFrame) -> pd.DataFrame:
+def build_distance_time(df):
     """
-    Builds an *increasing* distance travelled curve by using `attributes.distance` as an increment.
-
-    Assumption (based on your dataset):
-    - `distance` is the distance travelled since the previous point (increment)
-    - it is in METERS
-    Therefore:
-    - per_row_km = distance / 1000
-    - cumulative_km = cumsum(per_row_km)
-    Also applies sanity clamping based on time delta between points.
+    Correct distance–time curve:
+    - uses ONLY attributes.distance
+    - meters → km
+    - cumulative sum per device
     """
-    d = raw_df.dropna(subset=["fixtime", "deviceid"]).copy()
-    if d.empty:
-        return d
+    out = []
 
-    d = d.sort_values(["deviceid", "fixtime"]).reset_index(drop=True)
-
-    d["distance"] = pd.to_numeric(d.get("distance"), errors="coerce")
-    d["distance_step_km"] = np.nan
-    d["distance_travelled_km"] = np.nan
-
-    for deviceid, g in d.groupby("deviceid", sort=False):
+    for deviceid, g in df.groupby("deviceid"):
         g = g.sort_values("fixtime").copy()
+        g["distance_km"] = g["distance"] / 1000.0
+        g["distance_travelled_km"] = g["distance_km"].cumsum()
+        out.append(g)
 
-        # meters -> km (treating distance as increment)
-        step_km = (g["distance"].astype(float) / 1000.0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
-        step_km = step_km.clip(lower=0.0)
-
-        # time-based sanity clamp: step cannot exceed plausible speed * time gap
-        dt_sec = g["fixtime"].diff().dt.total_seconds().fillna(0.0)
-        max_km = (MAX_PLAUSIBLE_SPEED_KMH * (dt_sec / 3600.0)) * SANITY_BUFFER
-        max_km = max_km.replace([np.inf, -np.inf], np.nan).fillna(0.0).clip(lower=0.0)
-
-        step_km = np.minimum(step_km.values, max_km.values)
-
-        # Build increasing curve
-        cumulative_km = np.cumsum(step_km)
-
-        d.loc[g.index, "distance_step_km"] = step_km
-        d.loc[g.index, "distance_travelled_km"] = cumulative_km
-
-    return d
+    return pd.concat(out, ignore_index=True)
 
 
-dist_time_df = build_distance_over_time_using_distance(df)
+dist_time_df = build_distance_time(df)
 
 
 # =============================
 # TABS
 # =============================
-tab_overview, tab_graphs, tab_charging, tab_popular, tab_route = st.tabs(
-    ["Overview", "Graphs", "Charging", "Popular locations", "Route map"]
-)
+tab_overview, tab_graphs = st.tabs(["Overview", "Graphs"])
 
 
 # =============================
-# OVERVIEW TAB
+# OVERVIEW
 # =============================
 with tab_overview:
-    st.subheader("Overview (per selected bike)")
-
-    # ✅ ONLY CHANGE: show chassis number (tc_devices.name) instead of deviceid in the table
-    deviceid_to_chassis = dict(zip(device_map_df["deviceid"], device_map_df["device_name"])) if not device_map_df.empty else {}
-
     rows = []
+
     for deviceid, g in df.groupby("deviceid"):
-        g = g.sort_values("fixtime")
-
-        nz = g.loc[g["speed_kmh"] > 0, "speed_kmh"].dropna()
-        avg_speed = float(nz.mean()) if len(nz) else np.nan
-        max_speed = float(g["speed_kmh"].max()) if g["speed_kmh"].notna().any() else np.nan
-
-        total_dist = np.nan
-
-        # ✅ ONLY CHANGE: do NOT use totalDistance; use attributes.distance (meters) only
-        dd = g["distance"].dropna()
-        total_dist = float(dd.sum()) if len(dd) else np.nan  # meters
-
-        # ✅ ONLY CHANGE: meters -> km, then divide by number of days
-        avg_daily_dist = (total_dist / 1000.0) / num_days if (not np.isnan(total_dist) and num_days > 0) else np.nan
-
+        total_km = g["distance"].sum() / 1000.0
         rows.append({
-            "Chassis number": deviceid_to_chassis.get(int(deviceid), str(int(deviceid))),
-            "Avg daily distance (km)": avg_daily_dist,
-            "Avg speed (km/h) [zeros ignored]": avg_speed,
-            "Max speed (km/h)": max_speed,
-            "Total distance in range (km)": (total_dist / 1000.0) if not np.isnan(total_dist) else np.nan,
-            "Points": int(len(g)),
+            "Bike": g.device_name.iloc[0],
+            "Total distance (km)": total_km,
+            "Avg daily distance (km)": total_km / num_days if num_days else 0,
         })
 
-    st.dataframe(pd.DataFrame(rows).sort_values("Chassis number"), use_container_width=True)
+    st.dataframe(pd.DataFrame(rows), use_container_width=True)
 
 
 # =============================
-# GRAPHS TAB
+# GRAPHS
 # =============================
 with tab_graphs:
-    st.subheader("Graphs")
+    st.markdown("### Distance travelled over time")
 
-    st.markdown("### 1) Speed over time (km/h)")
-    st.altair_chart(
-        alt_line(df.dropna(subset=["fixtime", "speed_kmh"]), "fixtime:T", "speed_kmh:Q", "deviceid:N",
-                 "Speed over time", "Speed (km/h)"),
-        use_container_width=True,
-    )
-
-    # --- UPDATED GRAPH (USING distance increments in meters -> cumulative km) ---
-    st.markdown("### 2) Distance travelled over time")
-    st.caption(
-        "This is now computed using `attributes.distance` (treated as meters travelled since the previous point). "
-        "We convert meters to km and plot a cumulative increasing curve."
-    )
     st.altair_chart(
         alt_line(
-            dist_time_df.dropna(subset=["fixtime", "distance_travelled_km"]),
+            dist_time_df,
             "fixtime:T",
             "distance_travelled_km:Q",
-            "deviceid:N",
-            "Distance travelled over time (cumulative from attributes.distance)",
-            "Distance travelled (km)",
+            "device_name:N",
+            "Distance travelled over time",
+            "Distance (km)",
         ),
         use_container_width=True,
     )
-
-    st.markdown("### 3) Temp1 over time")
-    st.altair_chart(
-        alt_line(df.dropna(subset=["fixtime", "temp1"]), "fixtime:T", "temp1:Q", "deviceid:N",
-                 "Temp1 over time", "Temp1"),
-        use_container_width=True,
-    )
-
-
-# =============================
-# CHARGING TAB
-# =============================
-with tab_charging:
-    st.subheader("Charging")
-    st.caption("Charging ON/OFF uses attributes.door. SOC uses attributes.fuel1. Plug-in location uses lat/lon at session start.")
-
-    sessions = []
-
-    for deviceid, g in df.groupby("deviceid"):
-        g = g.sort_values("fixtime").reset_index(drop=True)
-        if g["door"].isna().all():
-            continue
-
-        door = g["door"].fillna(False).astype(bool)
-
-        start_idxs, end_idxs = [], []
-        prev = door.iloc[0]
-        for i in range(1, len(door)):
-            cur = door.iloc[i]
-            if (prev is False) and (cur is True):
-                start_idxs.append(i)
-            if (prev is True) and (cur is False):
-                end_idxs.append(i)
-            prev = cur
-
-        if door.iloc[0] is True:
-            start_idxs = [0] + start_idxs
-        if door.iloc[-1] is True:
-            end_idxs = end_idxs + [len(g) - 1]
-
-        pairs = []
-        si = ei = 0
-        while si < len(start_idxs) and ei < len(end_idxs):
-            s, e = start_idxs[si], end_idxs[ei]
-            if e <= s:
-                ei += 1
-                continue
-            pairs.append((s, e))
-            si += 1
-            ei += 1
-
-        for s, e in pairs:
-            start_ts = g.loc[s, "fixtime"]
-            end_ts = g.loc[e, "fixtime"]
-            if pd.isna(start_ts) or pd.isna(end_ts) or end_ts <= start_ts:
-                continue
-
-            sessions.append({
-                "deviceid": int(deviceid),
-                "start": start_ts,
-                "end": end_ts,
-                "duration_sec": (end_ts - start_ts).total_seconds(),
-                "SOC_in": g.loc[s, "fuel1"],
-                "SOC_out": g.loc[e, "fuel1"],
-                "lat_in": g.loc[s, "latitude"],
-                "lon_in": g.loc[s, "longitude"],
-            })
-
-    sessions_df = pd.DataFrame(sessions)
-
-    if sessions_df.empty:
-        st.warning("No charging sessions detected in the selected date range.")
-    else:
-        sessions_df["start"] = pd.to_datetime(sessions_df["start"])
-        sessions_df["end"] = pd.to_datetime(sessions_df["end"])
-        sessions_df["duration"] = sessions_df["duration_sec"].apply(format_hms)
-
-        st.markdown("### Charging sessions")
-        st.dataframe(
-            sessions_df.sort_values(["deviceid", "start"])[
-                ["deviceid", "start", "end", "duration", "SOC_in", "SOC_out", "lat_in", "lon_in"]
-            ],
-            use_container_width=True,
-        )
-
-        st.markdown("### Daily charging totals (per device)")
-        daily_rows = []
-        for _, r in sessions_df.iterrows():
-            for d, secs in split_session_by_day(pd.Timestamp(r["start"]), pd.Timestamp(r["end"])):
-                daily_rows.append({"deviceid": r["deviceid"], "date": d, "charging_seconds": secs})
-
-        daily_df = pd.DataFrame(daily_rows)
-        if not daily_df.empty:
-            daily_summary = (
-                daily_df.groupby(["deviceid", "date"], as_index=False)["charging_seconds"]
-                .sum()
-                .sort_values(["deviceid", "date"])
-            )
-            daily_summary["charging_time"] = daily_summary["charging_seconds"].apply(format_hms)
-
-            st.dataframe(daily_summary[["deviceid", "date", "charging_time"]], use_container_width=True)
-
-            bar = (
-                alt.Chart(daily_summary)
-                .mark_bar()
-                .encode(
-                    x=alt.X("date:T", title="Date"),
-                    y=alt.Y("charging_seconds:Q", title="Charging seconds"),
-                    color=alt.Color("deviceid:N", legend=alt.Legend(title="Device ID")),
-                    tooltip=["deviceid:N", "date:T", "charging_time:N"],
-                )
-                .properties(height=360, title="Daily charging duration")
-                .interactive()
-            )
-            st.altair_chart(bar, use_container_width=True)
-
-        st.markdown("### Charging locations (plug-in points)")
-        locs = sessions_df.dropna(subset=["lat_in", "lon_in"]).copy()
-        if locs.empty:
-            st.info("No valid charging plug-in points to show.")
-        else:
-            locs["label"] = locs.apply(
-                lambda x: f"Device {x['deviceid']} | SOC_in={x['SOC_in']} | SOC_out={x['SOC_out']}",
-                axis=1,
-            )
-            layer = pdk.Layer(
-                "ScatterplotLayer",
-                data=locs,
-                get_position="[lon_in, lat_in]",
-                get_radius=55,
-                pickable=True,
-            )
-            view_state = pdk.ViewState(
-                latitude=float(locs["lat_in"].mean()),
-                longitude=float(locs["lon_in"].mean()),
-                zoom=12,
-                pitch=0,
-            )
-            st.pydeck_chart(
-                pdk.Deck(
-                    initial_view_state=view_state,
-                    layers=[layer],
-                    tooltip={"text": "{label}"},
-                )
-            )
-
-        st.markdown("### SOC (fuel1) over time")
-        soc_df = df.dropna(subset=["fuel1", "fixtime"]).copy()
-        st.altair_chart(
-            alt_line(soc_df, "fixtime:T", "fuel1:Q", "deviceid:N", "SOC over time", "SOC (%)"),
-            use_container_width=True,
-        )
-
-
-# =============================
-# POPULAR LOCATIONS TAB
-# =============================
-with tab_popular:
-    st.subheader("Popular locations (hotspots)")
-    st.caption("Hotspots are computed by binning lat/lon into grid cells and counting visits.")
-
-    pop = df.dropna(subset=["latitude", "longitude"]).copy()
-    if pop.empty:
-        st.warning("No valid points to compute hotspots.")
-    else:
-        precision = 3
-        top_n = 500
-
-        pop["lat_bin"] = pop["latitude"].round(precision)
-        pop["lon_bin"] = pop["longitude"].round(precision)
-
-        hotspot = (
-            pop.groupby(["lat_bin", "lon_bin"], as_index=False)
-            .size()
-            .rename(columns={"size": "count"})
-            .sort_values("count", ascending=False)
-            .head(top_n)
-        )
-
-        # ✅ ONLY CHANGE: consider popular only if visits > 20
-        hotspot = hotspot[hotspot["count"] > 20].copy()
-
-        hotspot["label"] = hotspot.apply(
-            lambda r: f"Visits: {int(r['count'])}\nLat: {r['lat_bin']}\nLon: {r['lon_bin']}",
-            axis=1
-        )
-
-        # ---- NEW: radar style + accurate dots (no huge orange circles) ----
-        hotspot["count"] = pd.to_numeric(hotspot["count"], errors="coerce").fillna(1).astype(int)
-
-        # Opacity curve: more visits = darker blue (no stacking required)
-        max_c = int(hotspot["count"].max()) if len(hotspot) else 1
-        denom = np.log1p(max_c) if max_c > 0 else 1.0
-        hotspot["alpha"] = (40 + (np.log1p(hotspot["count"]) / denom) * 180).clip(40, 220)
-
-        # Sizes in meters
-        DOT_RADIUS = 18      # small, accurate location dot
-        HALO_RADIUS = 160    # soft radar halo
-
-        halo_layer = pdk.Layer(
-            "ScatterplotLayer",
-            data=hotspot,
-            get_position="[lon_bin, lat_bin]",
-            get_radius=HALO_RADIUS,
-            stroked=False,
-            filled=True,
-            pickable=False,
-            # light blue glow
-            get_fill_color=[80, 160, 255, 25],
-        )
-
-        ring_layer = pdk.Layer(
-            "ScatterplotLayer",
-            data=hotspot,
-            get_position="[lon_bin, lat_bin]",
-            get_radius=HALO_RADIUS,
-            stroked=True,
-            filled=False,
-            pickable=False,
-            line_width_min_pixels=1,
-            get_line_color=[80, 160, 255, 120],
-        )
-
-        dot_layer = pdk.Layer(
-            "ScatterplotLayer",
-            data=hotspot,
-            get_position="[lon_bin, lat_bin]",
-            get_radius=DOT_RADIUS,
-            stroked=True,
-            filled=True,
-            pickable=True,
-            line_width_min_pixels=1,
-            # darker blue as count increases (alpha column drives intensity)
-            get_fill_color="[30, 120, 255, alpha]",
-            get_line_color=[10, 60, 160, 180],
-        )
-
-        view_state = pdk.ViewState(
-            latitude=float(pop["latitude"].mean()),
-            longitude=float(pop["longitude"].mean()),
-            zoom=12,
-            pitch=0,
-        )
-
-        st.pydeck_chart(
-            pdk.Deck(
-                initial_view_state=view_state,
-                layers=[halo_layer, ring_layer, dot_layer],
-                tooltip={"text": "{label}"},
-            )
-        )
-
-        st.markdown("### Hotspot table")
-        st.dataframe(hotspot, use_container_width=True)
-
-
-# =============================
-# ROUTE MAP TAB
-# =============================
-with tab_route:
-    st.subheader("Route map (polyline)")
-    one_device = st.selectbox("Choose one bike (deviceid)", options=selected_devices)
-
-    route = df[df["deviceid"] == one_device].sort_values("fixtime").copy()
-    route = route.dropna(subset=["latitude", "longitude", "fixtime"])
-
-    if route.empty:
-        st.warning("No route points found for this device in the selected range.")
-    else:
-        path = route[["longitude", "latitude"]].values.tolist()
-        path_df = pd.DataFrame([{"deviceid": int(one_device), "path": path}])
-
-        # ✅ ONLY CHANGE: decrease line width to better match street width (keep neon blue)
-        path_layer = pdk.Layer(
-            "PathLayer",
-            data=path_df,
-            get_path="path",
-            get_width=2,               # thinner
-            width_min_pixels=2,        # still visible at different zoom levels
-            rounded=True,
-            get_color=[0, 255, 255],   # neon blue (cyan)
-            pickable=False,
-        )
-
-        start_pt = route.iloc[0]
-        end_pt = route.iloc[-1]
-
-        markers = pd.DataFrame([
-            {"name": "Start", "lon": float(start_pt["longitude"]), "lat": float(start_pt["latitude"])},
-            {"name": "End", "lon": float(end_pt["longitude"]), "lat": float(end_pt["latitude"])},
-        ])
-
-        marker_layer = pdk.Layer(
-            "ScatterplotLayer",
-            data=markers,
-            get_position="[lon, lat]",
-            get_radius=75,
-            pickable=True,
-        )
-
-        view_state = pdk.ViewState(
-            latitude=float(route["latitude"].mean()),
-            longitude=float(route["longitude"].mean()),
-            zoom=12,
-            pitch=0,
-        )
-
-        st.pydeck_chart(
-            pdk.Deck(
-                initial_view_state=view_state,
-                layers=[path_layer, marker_layer],
-                tooltip={"text": "{name}"},
-            )
-        )
-
-        st.markdown("### Route points preview")
-        st.dataframe(
-            route[["fixtime", "latitude", "longitude", "speed_kmh", "fuel1", "door", "ignition"]].head(300),
-            use_container_width=True,
-        )
