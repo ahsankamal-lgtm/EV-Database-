@@ -20,7 +20,7 @@ CUSTOM_CSS = """
 <style>
 /* --- Page background: blue -> turquoise gradient --- */
 .stApp {
-  background: linear-gradient(135deg, #0B4F9A 0%, #00B7B7 100%);
+  background: linear-gradient(135deg, #001F3F 0%, #0074D9 50%, #7FDBFF 100%);
 }
 
 /* --- Make main content area look clean on gradient --- */
