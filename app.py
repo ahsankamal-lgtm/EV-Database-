@@ -53,7 +53,7 @@ section[data-testid="stSidebar"] p {
 /* --- Headings (INCLUDING Streamlit title) --- */
 h1, h2, h3, h4, h5, h6,
 [data-testid="stTitle"] {
-  color: #FFFFFF !important;
+  color: #0074D9 !important;
   letter-spacing: 0.3px;
 }
 
