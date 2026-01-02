@@ -37,7 +37,7 @@ def login_gate() -> None:
     if st.session_state.logged_in:
         return
 
-    st.markdown("## Welcome")
+    st.title("## Welcome")
     st.markdown("Please sign in to continue.")
 
     with st.form("login_form", clear_on_submit=False):
@@ -111,7 +111,7 @@ h1.gradient-title {
   font-weight: 800;
   letter-spacing: 0.5px;
 
-  background: linear-gradient(90deg, #2ED9C3 0%, #0074D9 55%, #FFFFFF 100%) !important;
+  background: linear-gradient(90deg, #FFFFFF 100%) !important;
   -webkit-background-clip: text !important;
   background-clip: text !important;
   -webkit-text-fill-color: transparent !important;
