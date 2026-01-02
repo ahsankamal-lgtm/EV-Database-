@@ -57,9 +57,9 @@ body, p, span, div, label, li {
 /* ---------- HEADINGS (BLACK, NOT GRADIENT) ---------- */
 /* IMPORTANT: exclude the custom title so it stays gradient */
 h1:not(.gradient-title), h2, h3, h4, h5, h6 {
-  color: #FFFFFF !important;
+  color: #191970 !important;
   background: none !important;
-  -webkit-text-fill-color: #FFFFFF !important;
+  -webkit-text-fill-color: #191970 !important;
 }
 
 /* ---------- TITLE GRADIENT ONLY (Turquoise/Blue -> White) ---------- */
