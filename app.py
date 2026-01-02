@@ -153,9 +153,6 @@ def card_close():
 
 # Title: gradient fill (turquoise/blue/white) with NO border
 st.markdown('<h1 class="gradient-title">🚴‍♀️ EV Analytics App</h1>', unsafe_allow_html=True)
-st.caption("A unified view of electric vehicle performance, mobility patterns, and charging activity")
-
-
 
 
 # =============================
