@@ -8,6 +8,16 @@ import altair as alt
 import pydeck as pdk
 
 
+import json
+from datetime import datetime, date, time, timedelta
+
+import numpy as np
+import pandas as pd
+import streamlit as st
+import altair as alt
+import pydeck as pdk
+
+
 # =============================
 # UI / CONFIG
 # =============================
@@ -18,95 +28,116 @@ st.set_page_config(page_title="🛸 EV GPS Analysis App", layout="wide")
 # =============================
 CUSTOM_CSS = """
 <style>
-/* --- Force full-page canvas and remove any default white margins --- */
-html, body, [data-testid="stAppViewContainer"], [data-testid="stAppViewContainer"] > .main {
+
+/* ---------- FULL CANVAS FIX ---------- */
+html, body,
+[data-testid="stAppViewContainer"],
+[data-testid="stAppViewContainer"] > .main,
+[data-testid="stApp"] {
   height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
 }
 
-/* --- Page background: blue gradient (full page, like your other app) --- */
+/* ---------- GLOBAL BACKGROUND ---------- */
 .stApp {
-  min-height: 100vh;
-  background: linear-gradient(135deg, #001F3F 0%, #0074D9 55%, #7FDBFF 100%) !important;
+  min-height: 100vh !important;
+  background: linear-gradient(
+    135deg,
+    #001F3F 0%,
+    #0074D9 45%,
+    #2ED9C3 75%,
+    #7FDBFF 100%
+  ) !important;
   background-attachment: fixed !important;
 }
 
-/* --- Make main content area look clean on gradient --- */
+/* Remove Streamlit top bars background */
+[data-testid="stHeader"],
+[data-testid="stToolbar"] {
+  background: transparent !important;
+}
+
+/* ---------- GLOBAL TEXT (Turquoise Gradient) ---------- */
+body, p, span, div, label {
+  color: #D8FFFB;
+}
+
+/* ---------- MAIN HEADING GRADIENT ---------- */
+h1, h2, h3, h4, h5, h6,
+[data-testid="stTitle"] {
+  background: linear-gradient(90deg, #5EEAD4, #2ED9C3, #7FDBFF);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  letter-spacing: 0.4px;
+}
+
+/* ---------- CAPTION ---------- */
+div[data-testid="stCaptionContainer"] {
+  color: rgba(220, 255, 250, 0.85) !important;
+}
+
+/* ---------- CONTENT WIDTH ---------- */
 .block-container {
   padding-top: 1.6rem;
   padding-bottom: 2rem;
   max-width: 1200px;
 }
 
-/* --- Sidebar styling --- */
+/* ---------- SIDEBAR ---------- */
 section[data-testid="stSidebar"] {
-  background: rgba(255, 255, 255, 0.86);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  border-right: 1px solid rgba(0,0,0,0.06);
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(12px);
+  border-right: 1px solid rgba(0,0,0,0.08);
 }
-section[data-testid="stSidebar"] .stMarkdown,
-section[data-testid="stSidebar"] label,
-section[data-testid="stSidebar"] p {
-  color: #0B1B2B;
+section[data-testid="stSidebar"] * {
+  color: #0B1B2B !important;
 }
 
-/* --- Headings (INCLUDING Streamlit title) --- */
-h1, h2, h3, h4, h5, h6,
-[data-testid="stTitle"] {
-  color: #FFFFFF !important;
-  letter-spacing: 0.3px;
-}
-
-/* --- Caption color (keep readable on gradient) --- */
-div[data-testid="stCaptionContainer"] {
-  color: rgba(255, 255, 255, 0.80) !important;
-}
-
-/* --- Card utility --- */
+/* ---------- CARD ---------- */
 .card {
-  background: rgba(255, 255, 255, 0.92);
-  border: 1px solid rgba(0, 0, 0, 0.06);
+  background: rgba(255, 255, 255, 0.94);
   border-radius: 18px;
-  padding: 16px 16px 10px 16px;
-  box-shadow: 0 10px 24px rgba(0,0,0,0.10);
+  padding: 16px;
+  box-shadow: 0 10px 26px rgba(0,0,0,0.14);
   margin-bottom: 16px;
 }
 
-/* --- Tabs look nicer on light card --- */
+/* ---------- TABS ---------- */
 div[data-testid="stTabs"] > div {
-  background: rgba(255, 255, 255, 0.92);
-  border: 1px solid rgba(0,0,0,0.06);
+  background: rgba(255, 255, 255, 0.94);
   border-radius: 18px;
   padding: 10px 12px;
-  box-shadow: 0 10px 24px rgba(0,0,0,0.10);
 }
 
-/* --- Dataframe container --- */
+/* ---------- DATAFRAME ---------- */
 div[data-testid="stDataFrame"] {
   border-radius: 14px;
   overflow: hidden;
-  border: 1px solid rgba(0,0,0,0.06);
 }
 
-/* --- Buttons --- */
+/* ---------- BUTTONS ---------- */
 .stButton > button {
   border-radius: 12px;
-  border: 1px solid rgba(0,0,0,0.10);
   padding: 0.5rem 0.9rem;
 }
 
-/* --- Select/multiselect inputs --- */
+/* ---------- INPUTS ---------- */
 div[data-baseweb="select"] > div {
   border-radius: 12px !important;
 }
 
-/* --- Reduce harsh red error blocks on gradient --- */
+/* ---------- ALERTS ---------- */
 div[data-testid="stAlert"] {
   border-radius: 14px;
 }
+
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+
 
 def card_open():
     st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -114,7 +145,8 @@ def card_open():
 def card_close():
     st.markdown("</div>", unsafe_allow_html=True)
 
-st.title("🚲 Bike GPS Analytics (Traccar)")
+
+st.title("🛸 EV Analytics App")
 st.caption("Keyed by tc_positions.deviceid. Timeline uses fixtime. Noise points are excluded by default.")
 
 
