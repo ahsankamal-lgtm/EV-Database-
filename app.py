@@ -43,48 +43,41 @@ html, body,
   background-attachment: fixed !important;
 }
 
-/* Remove Streamlit top bars background (keep nav/menu visible) */
+/* Remove Streamlit top bars background */
 [data-testid="stHeader"],
 [data-testid="stToolbar"] {
   background: transparent !important;
 }
 
-/* ---------- GLOBAL TEXT (Readable on gradient) ---------- */
-body, p, span, div, label {
-  color: #D8FFFB;
+/* ---------- GLOBAL TEXT (Turquoise like your screenshot) ---------- */
+body, p, span, div, label, li {
+  color: #D8FFFB !important;
 }
 
-/* ---------- OUTLINED GRADIENT TITLE CLASS ---------- */
-.gradient-title {
-  font-size: 3rem;
-  font-weight: 800;
-  letter-spacing: 0.5px;
-  margin: 0;
-
-  /* Gradient fill */
-  background: linear-gradient(90deg, #5EEAD4, #2ED9C3, #7FDBFF);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-
-  /* Black border around each letter */
-  -webkit-text-stroke: 1.5px #000000;
-
-  /* Fallback outline */
-  text-shadow:
-    -1px -1px 0 #000,
-     1px -1px 0 #000,
-    -1px  1px 0 #000,
-     1px  1px 0 #000;
-}
-
-/* ---------- HEADINGS (keep your gradient style) ---------- */
+/* ---------- MAIN HEADING GRADIENT (for headings in general) ---------- */
 h1, h2, h3, h4, h5, h6 {
   background: linear-gradient(90deg, #5EEAD4, #2ED9C3, #7FDBFF);
   -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
   background-clip: text;
+  -webkit-text-fill-color: transparent;
   letter-spacing: 0.4px;
+}
+
+/* ---------- OUTLINED GRADIENT TITLE (fill = gradient, outline = black ONLY) ---------- */
+.gradient-title {
+  display: inline-block;
+  margin: 0;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+
+  background: linear-gradient(90deg, #5EEAD4, #2ED9C3, #7FDBFF);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent !important;
+
+  /* outline only */
+  -webkit-text-stroke: 2px #000000;
+  text-stroke: 2px #000000;
 }
 
 /* ---------- CAPTION ---------- */
@@ -159,7 +152,7 @@ def card_close():
     st.markdown("</div>", unsafe_allow_html=True)
 
 
-# --- Title with outlined gradient text (black border per letter) ---
+# Title: gradient fill + black outline (NOT black fill)
 st.markdown('<h1 class="gradient-title">🛸 EV Analytics App</h1>', unsafe_allow_html=True)
 st.caption("Keyed by tc_positions.deviceid. Timeline uses fixtime. Noise points are excluded by default.")
 
