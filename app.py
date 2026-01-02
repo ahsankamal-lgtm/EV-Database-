@@ -114,7 +114,7 @@ def card_open():
 def card_close():
     st.markdown("</div>", unsafe_allow_html=True)
 
-st.title("🚲 Bike GPS Analytics (Traccar)")
+st.title("🛸 EV Analytics App")
 st.caption("Keyed by tc_positions.deviceid. Timeline uses fixtime. Noise points are excluded by default.")
 
 
