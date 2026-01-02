@@ -6,6 +6,59 @@ import pandas as pd
 import streamlit as st
 import altair as alt
 import pydeck as pdk
+import hmac
+
+# -----------------------------
+# LOGIN HELPERS
+# -----------------------------
+def _check_password(username: str, password: str) -> bool:
+    """
+    Validates username/password against Streamlit secrets.
+    Put these in Streamlit Cloud -> App -> Settings -> Secrets:
+    
+    [auth]
+    username = "admin"
+    password = "yourStrongPassword"
+    """
+    try:
+        cfg = st.secrets["auth"]
+        valid_user = str(cfg.get("username", ""))
+        valid_pass = str(cfg.get("password", ""))
+    except Exception:
+        return False
+
+    # constant-time compare to avoid timing leaks
+    return hmac.compare_digest(username, valid_user) and hmac.compare_digest(password, valid_pass)
+
+
+def login_gate() -> None:
+    """
+    Shows a landing/login page until the user logs in.
+    Once logged in, allows the rest of the app to run.
+    """
+    if "logged_in" not in st.session_state:
+        st.session_state.logged_in = False
+
+    if st.session_state.logged_in:
+        return  # allow app to continue
+
+    # --- Landing page UI ---
+    st.markdown("## Welcome")
+    st.markdown("Please sign in to continue.")
+
+    with st.form("login_form", clear_on_submit=False):
+        username = st.text_input("User ID")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Sign in")
+
+    if submitted:
+        if _check_password(username.strip(), password):
+            st.session_state.logged_in = True
+            st.rerun()
+        else:
+            st.error("Invalid User ID or Password.")
+
+    st.stop()  # IMPORTANT: prevents the rest of the app from loading
 
 
 # =============================
