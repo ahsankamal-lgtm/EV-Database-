@@ -81,7 +81,7 @@ h1.gradient-title {
 
 /* ---------- CAPTION (BLACK) ---------- */
 div[data-testid="stCaptionContainer"] {
-  color: #000000 !important;
+  color: #FFFFFF !important;
 }
 
 /* ---------- CONTENT WIDTH ---------- */
