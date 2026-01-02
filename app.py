@@ -12,6 +12,98 @@ import pydeck as pdk
 # UI / CONFIG
 # =============================
 st.set_page_config(page_title="🚲 Bike GPS Analytics (Traccar)", layout="wide")
+
+# =============================
+# AESTHETICS (UI ONLY)
+# =============================
+CUSTOM_CSS = """
+<style>
+/* --- Page background: blue -> turquoise gradient --- */
+.stApp {
+  background: linear-gradient(135deg, #0B4F9A 0%, #00B7B7 100%);
+}
+
+/* --- Make main content area look clean on gradient --- */
+.block-container {
+  padding-top: 1.6rem;
+  padding-bottom: 2rem;
+  max-width: 1200px;
+}
+
+/* --- Sidebar styling --- */
+section[data-testid="stSidebar"] {
+  background: rgba(255, 255, 255, 0.86);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-right: 1px solid rgba(0,0,0,0.06);
+}
+section[data-testid="stSidebar"] .stMarkdown,
+section[data-testid="stSidebar"] label,
+section[data-testid="stSidebar"] p {
+  color: #0B1B2B;
+}
+
+/* --- Headings --- */
+h1, h2, h3, h4, h5, h6 {
+  color: #061826;
+  letter-spacing: 0.2px;
+}
+div[data-testid="stCaptionContainer"] {
+  color: rgba(6, 24, 38, 0.75);
+}
+
+/* --- Card utility --- */
+.card {
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 18px;
+  padding: 16px 16px 10px 16px;
+  box-shadow: 0 10px 24px rgba(0,0,0,0.10);
+  margin-bottom: 16px;
+}
+
+/* --- Tabs look nicer on light card --- */
+div[data-testid="stTabs"] > div {
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(0,0,0,0.06);
+  border-radius: 18px;
+  padding: 10px 12px;
+  box-shadow: 0 10px 24px rgba(0,0,0,0.10);
+}
+
+/* --- Dataframe container --- */
+div[data-testid="stDataFrame"] {
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid rgba(0,0,0,0.06);
+}
+
+/* --- Buttons --- */
+.stButton > button {
+  border-radius: 12px;
+  border: 1px solid rgba(0,0,0,0.10);
+  padding: 0.5rem 0.9rem;
+}
+
+/* --- Select/multiselect inputs --- */
+div[data-baseweb="select"] > div {
+  border-radius: 12px !important;
+}
+
+/* --- Reduce harsh red error blocks on gradient --- */
+div[data-testid="stAlert"] {
+  border-radius: 14px;
+}
+</style>
+"""
+st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+
+def card_open():
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+
+def card_close():
+    st.markdown("</div>", unsafe_allow_html=True)
+
 st.title("🚲 Bike GPS Analytics (Traccar)")
 st.caption("Keyed by tc_positions.deviceid. Timeline uses fixtime. Noise points are excluded by default.")
 
@@ -378,16 +470,15 @@ if not device_map_df.empty and "device_name" not in df.columns:
 # =============================
 def build_distance_over_time_using_distance(raw_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Builds an increasing distance travelled curve using ONLY `attributes.distance` (meters).
+    Builds an *increasing* distance travelled curve by using `attributes.distance` as an increment.
 
-    Requirements implemented:
-    - Do NOT use totalDistance at all.
-    - Use ONLY attributes.distance (already meters).
-    - Convert meters -> km.
-    - Cumulative sum per device within the selected date range.
-    - The curve starts from the first cumulative value in the selected range
-      (it does not need to start at 0).
-    - Keep the same time-based sanity clamp logic already present.
+    Assumption (based on your dataset):
+    - `distance` is the distance travelled since the previous point (increment)
+    - it is in METERS
+    Therefore:
+    - per_row_km = distance / 1000
+    - cumulative_km = cumsum(per_row_km)
+    Also applies sanity clamping based on time delta between points.
     """
     d = raw_df.dropna(subset=["fixtime", "deviceid"]).copy()
     if d.empty:
@@ -402,7 +493,7 @@ def build_distance_over_time_using_distance(raw_df: pd.DataFrame) -> pd.DataFram
     for deviceid, g in d.groupby("deviceid", sort=False):
         g = g.sort_values("fixtime").copy()
 
-        # meters -> km (treating distance as increment between points)
+        # meters -> km (treating distance as increment)
         step_km = (g["distance"].astype(float) / 1000.0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
         step_km = step_km.clip(lower=0.0)
 
@@ -413,7 +504,7 @@ def build_distance_over_time_using_distance(raw_df: pd.DataFrame) -> pd.DataFram
 
         step_km = np.minimum(step_km.values, max_km.values)
 
-        # Cumulative curve for the selected range (do NOT force start to 0)
+        # Build increasing curve
         cumulative_km = np.cumsum(step_km)
 
         d.loc[g.index, "distance_step_km"] = step_km
@@ -437,6 +528,7 @@ tab_overview, tab_graphs, tab_charging, tab_popular, tab_route = st.tabs(
 # OVERVIEW TAB
 # =============================
 with tab_overview:
+    card_open()
     st.subheader("Overview (per selected bike)")
 
     # ✅ ONLY CHANGE: show chassis number (tc_devices.name) instead of deviceid in the table
@@ -469,12 +561,14 @@ with tab_overview:
         })
 
     st.dataframe(pd.DataFrame(rows).sort_values("Chassis number"), use_container_width=True)
+    card_close()
 
 
 # =============================
 # GRAPHS TAB
 # =============================
 with tab_graphs:
+    card_open()
     st.subheader("Graphs")
 
     st.markdown("### 1) Speed over time (km/h)")
@@ -487,8 +581,8 @@ with tab_graphs:
     # --- UPDATED GRAPH (USING distance increments in meters -> cumulative km) ---
     st.markdown("### 2) Distance travelled over time")
     st.caption(
-        "This is computed using `attributes.distance` only (meters travelled between points). "
-        "We convert meters to km and plot a cumulative increasing curve for the selected dates."
+        "This is now computed using `attributes.distance` (treated as meters travelled since the previous point). "
+        "We convert meters to km and plot a cumulative increasing curve."
     )
     st.altair_chart(
         alt_line(
@@ -508,12 +602,14 @@ with tab_graphs:
                  "Temp1 over time", "Temp1"),
         use_container_width=True,
     )
+    card_close()
 
 
 # =============================
 # CHARGING TAB
 # =============================
 with tab_charging:
+    card_open()
     st.subheader("Charging")
     st.caption("Charging ON/OFF uses attributes.door. SOC uses attributes.fuel1. Plug-in location uses lat/lon at session start.")
 
@@ -653,12 +749,14 @@ with tab_charging:
             alt_line(soc_df, "fixtime:T", "fuel1:Q", "deviceid:N", "SOC over time", "SOC (%)"),
             use_container_width=True,
         )
+    card_close()
 
 
 # =============================
 # POPULAR LOCATIONS TAB
 # =============================
 with tab_popular:
+    card_open()
     st.subheader("Popular locations (hotspots)")
     st.caption("Hotspots are computed by binning lat/lon into grid cells and counting visits.")
 
@@ -755,12 +853,14 @@ with tab_popular:
 
         st.markdown("### Hotspot table")
         st.dataframe(hotspot, use_container_width=True)
+    card_close()
 
 
 # =============================
 # ROUTE MAP TAB
 # =============================
 with tab_route:
+    card_open()
     st.subheader("Route map (polyline)")
     one_device = st.selectbox("Choose one bike (deviceid)", options=selected_devices)
 
@@ -821,3 +921,4 @@ with tab_route:
             route[["fixtime", "latitude", "longitude", "speed_kmh", "fuel1", "door", "ignition"]].head(300),
             use_container_width=True,
         )
+    card_close()
