@@ -19,13 +19,7 @@ st.set_page_config(page_title="🛸 EV GPS Analysis App", layout="wide")
 # LOGIN HELPERS
 # -----------------------------
 def _check_password(username: str, password: str) -> bool:
-    """
-    Put these in Streamlit Cloud -> App -> Settings -> Secrets:
-
-    [auth]
-    username = "admin"
-    password = "yourStrongPassword"
-    """
+   
     try:
         cfg = st.secrets["auth"]
         valid_user = str(cfg.get("username", ""))
