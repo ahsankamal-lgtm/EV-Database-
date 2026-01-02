@@ -11,7 +11,7 @@ import pydeck as pdk
 # =============================
 # UI / CONFIG
 # =============================
-st.set_page_config(page_title="🚲 Bike GPS Analytics (Traccar)", layout="wide")
+st.set_page_config(page_title="🛸 EV GPS Analysis App", layout="wide")
 
 # =============================
 # AESTHETICS (UI ONLY)
