@@ -872,7 +872,7 @@ with tab_popular:
         )
 
         # ✅ ONLY CHANGE: consider popular only if visits > 20
-        hotspot = hotspot[hotspot["count"] > 20].copy()
+        hotspot = hotspot[hotspot["count"] > 200].copy()
 
         hotspot["label"] = hotspot.apply(
             lambda r: f"Visits: {int(r['count'])}\nLat: {r['lat_bin']}\nLon: {r['lon_bin']}",
