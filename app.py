@@ -336,12 +336,26 @@ if DB_DRIVER is None:
 @st.cache_resource
 def get_conn_params():
     cfg = st.secrets["mysql"]
+
+    # ✅ ONLY CHANGE: make secrets key names robust (supports username/user, password/passwd, database/db)
+    user = cfg.get("username", None) if isinstance(cfg, dict) else None
+    if user is None and isinstance(cfg, dict):
+        user = cfg.get("user", None)
+
+    password = cfg.get("password", None) if isinstance(cfg, dict) else None
+    if password is None and isinstance(cfg, dict):
+        password = cfg.get("passwd", None)
+
+    database = cfg.get("database", None) if isinstance(cfg, dict) else None
+    if database is None and isinstance(cfg, dict):
+        database = cfg.get("db", None)
+
     return {
         "host": cfg["host"],
         "port": int(cfg.get("port", 3306)),
-        "user": cfg["username"],
-        "password": cfg["password"],
-        "database": cfg["database"],
+        "user": user,
+        "password": password,
+        "database": database,
     }
 
 
@@ -1015,3 +1029,4 @@ with tab_route:
             use_container_width=True,
         )
     card_close()
+
