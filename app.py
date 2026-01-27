@@ -37,48 +37,106 @@ def login_gate() -> None:
     if st.session_state.logged_in:
         return
 
-    # ✅ ONLY CHANGE (1): Beautify landing page, linear, no visible lines, larger fonts
+    # ✅ ONLY CHANGE (Landing page): bigger, more beautiful, single enlarged card, inputs inside,
+    # white/bigger labels, and borderless inputs (no boxes).
+    st.markdown(
+        """
+        <style>
+          /* Scope login-only styling (there are no other forms in the app) */
+          div[data-testid="stForm"] label {
+            color: #FFFFFF !important;
+            font-size: 18px !important;
+            font-weight: 800 !important;
+          }
+          /* Borderless "underline" inputs for login */
+          div[data-testid="stForm"] input {
+            background: rgba(255,255,255,0.10) !important;
+            color: #FFFFFF !important;
+            border: 0 !important;
+            outline: none !important;
+            box-shadow: none !important;
+          }
+          /* Remove the default input box chrome */
+          div[data-testid="stForm"] div[data-baseweb="input"] > div {
+            background: rgba(255,255,255,0.10) !important;
+            border: 0 !important;
+            box-shadow: none !important;
+          }
+          /* Add a subtle underline */
+          div[data-testid="stForm"] div[data-baseweb="input"] {
+            border-bottom: 2px solid rgba(255,255,255,0.35) !important;
+            border-radius: 14px !important;
+            padding: 6px 6px !important;
+          }
+
+          /* Make the sign-in button look nicer in the login card */
+          div[data-testid="stForm"] button {
+            border-radius: 14px !important;
+            padding: 0.6rem 1.1rem !important;
+            font-weight: 800 !important;
+          }
+
+          /* Reduce extra blank space under widgets inside the login form */
+          div[data-testid="stForm"] .stTextInput,
+          div[data-testid="stForm"] .stButton {
+            margin-bottom: 10px !important;
+          }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
     st.markdown(
         """
         <div style="
-            max-width: 560px;
-            margin: 9vh auto 0 auto;
-            background: rgba(255,255,255,0.96);
-            border-radius: 24px;
-            padding: 30px 26px 26px 26px;
-            box-shadow: 0 22px 50px rgba(0,0,0,0.18);
+            max-width: 740px;
+            margin: 10vh auto 0 auto;
+            padding: 0;
+            border-radius: 30px;
+            overflow: hidden;
+            box-shadow: 0 26px 70px rgba(0,0,0,0.24);
             border: 0;
         ">
           <div style="
-            display:flex; align-items:center; justify-content:center;
-            gap:14px; margin-bottom:14px;
+              padding: 26px 28px;
+              background: linear-gradient(135deg, rgba(0,116,217,0.92), rgba(46,217,195,0.88));
           ">
-            <div style="
-              width:52px; height:52px; border-radius:18px;
-              display:flex; align-items:center; justify-content:center;
-              background: linear-gradient(135deg,#0074D9,#2ED9C3);
-              color:white; font-size:24px; font-weight:900;
-              box-shadow: 0 12px 28px rgba(0,0,0,0.16);
-              border:0;
-            ">EV</div>
-            <div style="text-align:left;">
-              <div style="font-size:28px; font-weight:900; color:#1f2937; line-height:1.1;">
-                EV Analytics App
-              </div>
-              <div style="font-size:16px; color:#4b5563; margin-top:6px;">
-                Please sign in to continue
+            <div style="display:flex; align-items:center; gap:16px;">
+              <div style="
+                width:64px; height:64px; border-radius:22px;
+                display:flex; align-items:center; justify-content:center;
+                background: rgba(255,255,255,0.18);
+                color:white; font-size:28px; font-weight:900;
+                box-shadow: 0 14px 34px rgba(0,0,0,0.18);
+              ">EV</div>
+              <div>
+                <div style="font-size:34px; font-weight:950; color:#FFFFFF; line-height:1.05;">
+                  EV Analytics App
+                </div>
+                <div style="font-size:18px; color:rgba(255,255,255,0.92); margin-top:8px;">
+                  Please sign in to continue
+                </div>
               </div>
             </div>
           </div>
-          <div style="height:10px;"></div>
-        </div>
+
+          <div style="
+              padding: 24px 28px 26px 28px;
+              background: rgba(255,255,255,0.08);
+              backdrop-filter: blur(10px);
+          ">
         """,
         unsafe_allow_html=True,
     )
 
     with st.form("login_form", clear_on_submit=False):
-        username = st.text_input("User ID")
-        password = st.text_input("Password", type="password")
+        # White/bigger labels are provided via custom HTML; we collapse Streamlit labels.
+        st.markdown('<div style="font-size:18px; font-weight:900; color:#FFFFFF; margin:6px 0 6px 2px;">Username</div>', unsafe_allow_html=True)
+        username = st.text_input("", label_visibility="collapsed", placeholder="Enter username")
+
+        st.markdown('<div style="font-size:18px; font-weight:900; color:#FFFFFF; margin:14px 0 6px 2px;">Password</div>', unsafe_allow_html=True)
+        password = st.text_input("", type="password", label_visibility="collapsed", placeholder="Enter password")
+
         submitted = st.form_submit_button("Sign in")
 
     if submitted:
@@ -88,6 +146,7 @@ def login_gate() -> None:
         else:
             st.error("Invalid User ID or Password.")
 
+    st.markdown("</div></div>", unsafe_allow_html=True)
     st.stop()
 
 
@@ -800,6 +859,19 @@ with tab_popular:
         DOT_RADIUS = 22      # pinpoint
         HALO_RADIUS = 260    # big halo
 
+        # ✅ ONLY CHANGE (Popular locations button): store / use focus location for map
+        if "hotspot_focus" not in st.session_state:
+            st.session_state["hotspot_focus"] = None
+
+        focus = st.session_state.get("hotspot_focus")
+        if focus is not None:
+            focus_lat, focus_lon = float(focus["lat"]), float(focus["lon"])
+            center_lat, center_lon = focus_lat, focus_lon
+            zoom_level = 16
+        else:
+            center_lat, center_lon = float(pop["latitude"].mean()), float(pop["longitude"].mean())
+            zoom_level = 12
+
         halo_layer = pdk.Layer(
             "ScatterplotLayer",
             data=hotspot,
@@ -826,23 +898,63 @@ with tab_popular:
             get_line_color=[180, 90, 0, 230],
         )
 
+        # Optional focus ring so selected hotspot stands out even when zoomed in
+        focus_layer = None
+        if focus is not None:
+            focus_df = pd.DataFrame([{"lat": focus_lat, "lon": focus_lon, "label": focus.get("label", "")}])
+            focus_layer = pdk.Layer(
+                "ScatterplotLayer",
+                data=focus_df,
+                get_position="[lon, lat]",
+                get_radius=520,
+                stroked=True,
+                filled=False,
+                pickable=False,
+                line_width_min_pixels=3,
+                get_line_color=[255, 140, 0, 210],
+            )
+
         view_state = pdk.ViewState(
-            latitude=float(pop["latitude"].mean()),
-            longitude=float(pop["longitude"].mean()),
-            zoom=12,
+            latitude=center_lat,
+            longitude=center_lon,
+            zoom=zoom_level,
             pitch=0,
         )
+
+        layers = [halo_layer, dot_layer] + ([focus_layer] if focus_layer is not None else [])
 
         st.pydeck_chart(
             pdk.Deck(
                 initial_view_state=view_state,
-                layers=[halo_layer, dot_layer],
+                layers=layers,
                 tooltip={"text": "{label}"},
             )
         )
 
-        st.markdown("### Hotspot table")
-        st.dataframe(hotspot, use_container_width=True)
+        # ✅ ONLY CHANGE (Popular locations button): buttons next to each hotspot row
+        st.markdown("### Hotspot table (click **View on map**)")
+        hotspot_tbl = hotspot[["lat_bin", "lon_bin", "count"]].copy()
+        hotspot_tbl = hotspot_tbl.sort_values("count", ascending=False).reset_index(drop=True)
+
+        header_cols = st.columns([2.2, 2.2, 1.2, 1.6])
+        header_cols[0].markdown("**Latitude**")
+        header_cols[1].markdown("**Longitude**")
+        header_cols[2].markdown("**Visits**")
+        header_cols[3].markdown("**Action**")
+
+        for i, r in hotspot_tbl.iterrows():
+            c0, c1, c2, c3 = st.columns([2.2, 2.2, 1.2, 1.6])
+            c0.write(float(r["lat_bin"]))
+            c1.write(float(r["lon_bin"]))
+            c2.write(int(r["count"]))
+            if c3.button("View on map", key=f"hotspot_view_{i}"):
+                st.session_state["hotspot_focus"] = {
+                    "lat": float(r["lat_bin"]),
+                    "lon": float(r["lon_bin"]),
+                    "label": f"Visits: {int(r['count'])}\nLat: {float(r['lat_bin'])}\nLon: {float(r['lon_bin'])}",
+                }
+                st.rerun()
+
     card_close()
 
 
