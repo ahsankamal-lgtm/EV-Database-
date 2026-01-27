@@ -336,26 +336,12 @@ if DB_DRIVER is None:
 @st.cache_resource
 def get_conn_params():
     cfg = st.secrets["mysql"]
-
-    # ✅ ONLY CHANGE: make secrets key names robust (supports username/user, password/passwd, database/db)
-    user = cfg.get("username", None) if isinstance(cfg, dict) else None
-    if user is None and isinstance(cfg, dict):
-        user = cfg.get("user", None)
-
-    password = cfg.get("password", None) if isinstance(cfg, dict) else None
-    if password is None and isinstance(cfg, dict):
-        password = cfg.get("passwd", None)
-
-    database = cfg.get("database", None) if isinstance(cfg, dict) else None
-    if database is None and isinstance(cfg, dict):
-        database = cfg.get("db", None)
-
     return {
         "host": cfg["host"],
         "port": int(cfg.get("port", 3306)),
-        "user": user,
-        "password": password,
-        "database": database,
+        "user": cfg["username"],
+        "password": cfg["password"],
+        "database": cfg["database"],
     }
 
 
@@ -369,7 +355,7 @@ def fetch_df(query: str, params: tuple):
             port=cfg["port"],
             user=cfg["user"],
             password=cfg["password"],
-            database=cfg["database"],
+            # ✅ ONLY CHANGE: remove default database selection at connect-time
             cursorclass=pymysql.cursors.DictCursor,
             autocommit=True,
         )
@@ -388,7 +374,7 @@ def fetch_df(query: str, params: tuple):
         port=cfg["port"],
         user=cfg["user"],
         password=cfg["password"],
-        database=cfg["database"],
+        # ✅ ONLY CHANGE: remove default database selection at connect-time
     )
     try:
         cur = conn.cursor(dictionary=True)
@@ -1029,4 +1015,3 @@ with tab_route:
             use_container_width=True,
         )
     card_close()
-
