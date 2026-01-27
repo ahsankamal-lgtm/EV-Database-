@@ -214,6 +214,9 @@ NOISE_CUTOFF = datetime(2000, 1, 1)
 MAX_PLAUSIBLE_SPEED_KMH = 120.0
 SANITY_BUFFER = 1.5
 
+# ✅ ONLY CHANGE: speed display cutoff
+SPEED_CUTOFF_KMH = 85.0
+
 
 # =============================
 # HELPERS
@@ -525,6 +528,9 @@ def fetch_positions(device_list, start_dt, end_dt):
 
     df["speed_kmh"] = df["speed"].apply(knots_to_kmh)
 
+    # ✅ ONLY CHANGE: clamp/blank speeds above 85 km/h
+    df.loc[df["speed_kmh"] > SPEED_CUTOFF_KMH, "speed_kmh"] = 0.0
+
     df["ignition"] = df["ignition_raw"].apply(to_bool)
     df["door"] = df["door_raw"].apply(to_bool)      # charging ON/OFF
     df["motion"] = df["motion_raw"].apply(to_bool)
@@ -612,8 +618,8 @@ dist_time_df = build_distance_over_time_using_distance(df)
 # =============================
 # TABS
 # =============================
-tab_overview, tab_graphs, tab_charging, tab_popular, tab_route = st.tabs(
-    ["Overview", "Graphs", "Charging", "Popular locations", "Route map"]
+tab_overview, tab_graphs, tab_popular, tab_route = st.tabs(
+    ["Overview", "Graphs", "Popular locations", "Route map"]
 )
 
 
@@ -622,38 +628,44 @@ tab_overview, tab_graphs, tab_charging, tab_popular, tab_route = st.tabs(
 # =============================
 with tab_overview:
     card_open()
-    st.subheader("Overview (per selected bike)")
+    st.subheader("Overview (per selected bike, per day)")
 
     # ✅ ONLY CHANGE: show chassis number (tc_devices.name) instead of deviceid in the table
     deviceid_to_chassis = dict(zip(device_map_df["deviceid"], device_map_df["device_name"])) if not device_map_df.empty else {}
 
-    rows = []
-    for deviceid, g in df.groupby("deviceid"):
-        g = g.sort_values("fixtime")
+    df_day = df.dropna(subset=["fixtime"]).copy()
+    df_day["date"] = df_day["fixtime"].dt.date
 
-        nz = g.loc[g["speed_kmh"] > 0, "speed_kmh"].dropna()
-        avg_speed = float(nz.mean()) if len(nz) else np.nan
-        max_speed = float(g["speed_kmh"].max()) if g["speed_kmh"].notna().any() else np.nan
+    daily_rows = []
+    for day, day_df in df_day.groupby("date"):
+        for deviceid, g in day_df.groupby("deviceid"):
+            g = g.sort_values("fixtime")
 
-        total_dist = np.nan
+            nz = g.loc[g["speed_kmh"] > 0, "speed_kmh"].dropna()
+            avg_speed = float(nz.mean()) if len(nz) else np.nan
+            max_speed = float(g["speed_kmh"].max()) if g["speed_kmh"].notna().any() else np.nan
 
-        # ✅ ONLY CHANGE: do NOT use totalDistance; use attributes.distance (meters) only
-        dd = g["distance"].dropna()
-        total_dist = float(dd.sum()) if len(dd) else np.nan  # meters
+            total_dist = np.nan
 
-        # ✅ ONLY CHANGE: meters -> km, then divide by number of days
-        avg_daily_dist = (total_dist / 1000.0) / num_days if (not np.isnan(total_dist) and num_days > 0) else np.nan
+            # ✅ ONLY CHANGE: do NOT use totalDistance; use attributes.distance (meters) only
+            dd = g["distance"].dropna()
+            total_dist = float(dd.sum()) if len(dd) else np.nan  # meters
 
-        rows.append({
-            "Chassis number": deviceid_to_chassis.get(int(deviceid), str(int(deviceid))),
-            "Avg daily distance (km)": avg_daily_dist,
-            "Avg speed (km/h) [zeros ignored]": avg_speed,
-            "Max speed (km/h)": max_speed,
-            "Total distance in range (km)": (total_dist / 1000.0) if not np.isnan(total_dist) else np.nan,
-            "Points": int(len(g)),
-        })
+            daily_rows.append({
+                "Date": day,
+                "Chassis number": deviceid_to_chassis.get(int(deviceid), str(int(deviceid))),
+                "Avg speed (km/h) [zeros ignored]": avg_speed,
+                "Max speed (km/h)": max_speed,
+                "Total distance (km)": (total_dist / 1000.0) if not np.isnan(total_dist) else np.nan,
+                "Points": int(len(g)),
+            })
 
-    st.dataframe(pd.DataFrame(rows).sort_values("Chassis number"), use_container_width=True)
+        st.markdown(f"### {day}")
+        st.dataframe(
+            pd.DataFrame([r for r in daily_rows if r["Date"] == day]).sort_values("Chassis number"),
+            use_container_width=True,
+        )
+
     card_close()
 
 
@@ -695,153 +707,6 @@ with tab_graphs:
                  "Temp1 over time", "Temp1"),
         use_container_width=True,
     )
-    card_close()
-
-
-# =============================
-# CHARGING TAB
-# =============================
-with tab_charging:
-    card_open()
-    st.subheader("Charging")
-    st.caption("Charging ON/OFF uses attributes.door. SOC uses attributes.fuel1. Plug-in location uses lat/lon at session start.")
-
-    sessions = []
-
-    for deviceid, g in df.groupby("deviceid"):
-        g = g.sort_values("fixtime").reset_index(drop=True)
-        if g["door"].isna().all():
-            continue
-
-        door = g["door"].fillna(False).astype(bool)
-
-        start_idxs, end_idxs = [], []
-        prev = door.iloc[0]
-        for i in range(1, len(door)):
-            cur = door.iloc[i]
-            if (prev is False) and (cur is True):
-                start_idxs.append(i)
-            if (prev is True) and (cur is False):
-                end_idxs.append(i)
-            prev = cur
-
-        if door.iloc[0] is True:
-            start_idxs = [0] + start_idxs
-        if door.iloc[-1] is True:
-            end_idxs = end_idxs + [len(g) - 1]
-
-        pairs = []
-        si = ei = 0
-        while si < len(start_idxs) and ei < len(end_idxs):
-            s, e = start_idxs[si], end_idxs[ei]
-            if e <= s:
-                ei += 1
-                continue
-            pairs.append((s, e))
-            si += 1
-            ei += 1
-
-        for s, e in pairs:
-            start_ts = g.loc[s, "fixtime"]
-            end_ts = g.loc[e, "fixtime"]
-            if pd.isna(start_ts) or pd.isna(end_ts) or end_ts <= start_ts:
-                continue
-
-            sessions.append({
-                "deviceid": int(deviceid),
-                "start": start_ts,
-                "end": end_ts,
-                "duration_sec": (end_ts - start_ts).total_seconds(),
-                "SOC_in": g.loc[s, "fuel1"],
-                "SOC_out": g.loc[e, "fuel1"],
-                "lat_in": g.loc[s, "latitude"],
-                "lon_in": g.loc[s, "longitude"],
-            })
-
-    sessions_df = pd.DataFrame(sessions)
-
-    if sessions_df.empty:
-        st.warning("No charging sessions detected in the selected date range.")
-    else:
-        sessions_df["start"] = pd.to_datetime(sessions_df["start"])
-        sessions_df["end"] = pd.to_datetime(sessions_df["end"])
-        sessions_df["duration"] = sessions_df["duration_sec"].apply(format_hms)
-
-        st.markdown("### Charging sessions")
-        st.dataframe(
-            sessions_df.sort_values(["deviceid", "start"])[
-                ["deviceid", "start", "end", "duration", "SOC_in", "SOC_out", "lat_in", "lon_in"]
-            ],
-            use_container_width=True,
-        )
-
-        st.markdown("### Daily charging totals (per device)")
-        daily_rows = []
-        for _, r in sessions_df.iterrows():
-            for d, secs in split_session_by_day(pd.Timestamp(r["start"]), pd.Timestamp(r["end"])):
-                daily_rows.append({"deviceid": r["deviceid"], "date": d, "charging_seconds": secs})
-
-        daily_df = pd.DataFrame(daily_rows)
-        if not daily_df.empty:
-            daily_summary = (
-                daily_df.groupby(["deviceid", "date"], as_index=False)["charging_seconds"]
-                .sum()
-                .sort_values(["deviceid", "date"])
-            )
-            daily_summary["charging_time"] = daily_summary["charging_seconds"].apply(format_hms)
-
-            st.dataframe(daily_summary[["deviceid", "date", "charging_time"]], use_container_width=True)
-
-            bar = (
-                alt.Chart(daily_summary)
-                .mark_bar()
-                .encode(
-                    x=alt.X("date:T", title="Date"),
-                    y=alt.Y("charging_seconds:Q", title="Charging seconds"),
-                    color=alt.Color("deviceid:N", legend=alt.Legend(title="Device ID")),
-                    tooltip=["deviceid:N", "date:T", "charging_time:N"],
-                )
-                .properties(height=360, title="Daily charging duration")
-                .interactive()
-            )
-            st.altair_chart(bar, use_container_width=True)
-
-        st.markdown("### Charging locations (plug-in points)")
-        locs = sessions_df.dropna(subset=["lat_in", "lon_in"]).copy()
-        if locs.empty:
-            st.info("No valid charging plug-in points to show.")
-        else:
-            locs["label"] = locs.apply(
-                lambda x: f"Device {x['deviceid']} | SOC_in={x['SOC_in']} | SOC_out={x['SOC_out']}",
-                axis=1,
-            )
-            layer = pdk.Layer(
-                "ScatterplotLayer",
-                data=locs,
-                get_position="[lon_in, lat_in]",
-                get_radius=55,
-                pickable=True,
-            )
-            view_state = pdk.ViewState(
-                latitude=float(locs["lat_in"].mean()),
-                longitude=float(locs["lon_in"].mean()),
-                zoom=12,
-                pitch=0,
-            )
-            st.pydeck_chart(
-                pdk.Deck(
-                    initial_view_state=view_state,
-                    layers=[layer],
-                    tooltip={"text": "{label}"},
-                )
-            )
-
-        st.markdown("### SOC (fuel1) over time")
-        soc_df = df.dropna(subset=["fuel1", "fixtime"]).copy()
-        st.altair_chart(
-            alt_line(soc_df, "fixtime:T", "fuel1:Q", "deviceid:N", "SOC over time", "SOC (%)"),
-            use_container_width=True,
-        )
     card_close()
 
 
