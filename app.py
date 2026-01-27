@@ -37,104 +37,159 @@ def login_gate() -> None:
     if st.session_state.logged_in:
         return
 
-    # ✅ ONLY CHANGE (Landing page): bigger, more beautiful, single enlarged card, inputs inside,
-    # white/bigger labels, and borderless inputs (no boxes).
+    # ✅ ONLY CHANGE (Landing page): make title card WHITE, move inputs INSIDE the card, make landing-page text WHITE,
+    # make card bigger + more visually appealing.
     st.markdown(
         """
         <style>
-          /* Scope login-only styling (there are no other forms in the app) */
-          div[data-testid="stForm"] label {
-            color: #FFFFFF !important;
-            font-size: 18px !important;
-            font-weight: 800 !important;
+          /* ---------- LOGIN PAGE (SCOPED) ---------- */
+          .login-card {
+            max-width: 760px;
+            margin: 10vh auto 0 auto;
+            border-radius: 30px;
+            overflow: hidden;
+            background: #FFFFFF;                 /* ✅ White card */
+            box-shadow: 0 28px 80px rgba(0,0,0,0.28);
+            border: 1px solid rgba(255,255,255,0.10);
           }
-          /* Borderless "underline" inputs for login */
-          div[data-testid="stForm"] input {
+
+          /* Header strip inside white card */
+          .login-card-header {
+            padding: 30px 32px;
+            background: linear-gradient(135deg, rgba(0,116,217,0.95), rgba(46,217,195,0.92));
+          }
+
+          .login-card-header * {
+            color: #FFFFFF !important;           /* ✅ White text */
+          }
+
+          .login-badge {
+            width: 72px; height: 72px;
+            border-radius: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(255,255,255,0.18);
+            color: #FFFFFF;
+            font-size: 30px;
+            font-weight: 950;
+            box-shadow: 0 16px 40px rgba(0,0,0,0.18);
+          }
+
+          .login-title {
+            font-size: 38px;
+            font-weight: 950;
+            line-height: 1.05;
+            margin: 0;
+          }
+
+          .login-subtitle {
+            font-size: 18px;
+            font-weight: 700;
+            opacity: 0.95;
+            margin-top: 10px;
+          }
+
+          /* Form area inside the same white card (but with a rich dark gradient so white labels are readable) */
+          .login-card-body {
+            padding: 26px 32px 30px 32px;
+            background: linear-gradient(135deg, rgba(0,31,63,0.92), rgba(0,116,217,0.45));
+          }
+
+          .login-card-body * {
+            color: #FFFFFF !important;           /* ✅ White text for the landing page */
+          }
+
+          /* Scope Streamlit form widgets within this page */
+          .login-card-body div[data-testid="stForm"] label {
+            color: #FFFFFF !important;           /* ✅ White labels */
+            font-size: 20px !important;          /* ✅ Bigger */
+            font-weight: 900 !important;
+          }
+
+          /* Hide Streamlit's internal labels (we use custom HTML labels) */
+          .login-card-body div[data-testid="stForm"] label[for] {
+            display: none !important;
+          }
+
+          /* Borderless, sleek inputs (no "boxes") */
+          .login-card-body div[data-testid="stForm"] div[data-baseweb="input"] {
             background: rgba(255,255,255,0.10) !important;
+            border: 0 !important;
+            box-shadow: none !important;
+            border-radius: 18px !important;
+            padding: 10px 12px !important;
+            backdrop-filter: blur(10px);
+          }
+
+          .login-card-body div[data-testid="stForm"] div[data-baseweb="input"] > div {
+            background: transparent !important;
+            border: 0 !important;
+            box-shadow: none !important;
+          }
+
+          .login-card-body div[data-testid="stForm"] input {
+            background: transparent !important;
             color: #FFFFFF !important;
             border: 0 !important;
             outline: none !important;
             box-shadow: none !important;
-          }
-          /* Remove the default input box chrome */
-          div[data-testid="stForm"] div[data-baseweb="input"] > div {
-            background: rgba(255,255,255,0.10) !important;
-            border: 0 !important;
-            box-shadow: none !important;
-          }
-          /* Add a subtle underline */
-          div[data-testid="stForm"] div[data-baseweb="input"] {
-            border-bottom: 2px solid rgba(255,255,255,0.35) !important;
-            border-radius: 14px !important;
-            padding: 6px 6px !important;
+            font-size: 18px !important;
+            font-weight: 700 !important;
           }
 
-          /* Make the sign-in button look nicer in the login card */
-          div[data-testid="stForm"] button {
-            border-radius: 14px !important;
-            padding: 0.6rem 1.1rem !important;
-            font-weight: 800 !important;
+          .login-card-body div[data-testid="stForm"] input::placeholder {
+            color: rgba(255,255,255,0.78) !important;
+            font-weight: 650 !important;
           }
 
-          /* Reduce extra blank space under widgets inside the login form */
-          div[data-testid="stForm"] .stTextInput,
-          div[data-testid="stForm"] .stButton {
-            margin-bottom: 10px !important;
+          /* Nice button */
+          .login-card-body div[data-testid="stForm"] button {
+            border-radius: 16px !important;
+            padding: 0.7rem 1.2rem !important;
+            font-weight: 900 !important;
+          }
+
+          /* Tighten spacing inside form */
+          .login-card-body div[data-testid="stForm"] .stTextInput,
+          .login-card-body div[data-testid="stForm"] .stButton {
+            margin-bottom: 12px !important;
           }
         </style>
         """,
         unsafe_allow_html=True,
     )
 
+    # Open the single enlarged WHITE card (header + form body inside)
     st.markdown(
         """
-        <div style="
-            max-width: 740px;
-            margin: 10vh auto 0 auto;
-            padding: 0;
-            border-radius: 30px;
-            overflow: hidden;
-            box-shadow: 0 26px 70px rgba(0,0,0,0.24);
-            border: 0;
-        ">
-          <div style="
-              padding: 26px 28px;
-              background: linear-gradient(135deg, rgba(0,116,217,0.92), rgba(46,217,195,0.88));
-          ">
-            <div style="display:flex; align-items:center; gap:16px;">
-              <div style="
-                width:64px; height:64px; border-radius:22px;
-                display:flex; align-items:center; justify-content:center;
-                background: rgba(255,255,255,0.18);
-                color:white; font-size:28px; font-weight:900;
-                box-shadow: 0 14px 34px rgba(0,0,0,0.18);
-              ">EV</div>
+        <div class="login-card">
+          <div class="login-card-header">
+            <div style="display:flex; align-items:center; gap:18px;">
+              <div class="login-badge">EV</div>
               <div>
-                <div style="font-size:34px; font-weight:950; color:#FFFFFF; line-height:1.05;">
-                  EV Analytics App
-                </div>
-                <div style="font-size:18px; color:rgba(255,255,255,0.92); margin-top:8px;">
-                  Please sign in to continue
-                </div>
+                <div class="login-title">EV Analytics App</div>
+                <div class="login-subtitle">Please sign in to continue</div>
               </div>
             </div>
           </div>
 
-          <div style="
-              padding: 24px 28px 26px 28px;
-              background: rgba(255,255,255,0.08);
-              backdrop-filter: blur(10px);
-          ">
+          <div class="login-card-body">
         """,
         unsafe_allow_html=True,
     )
 
     with st.form("login_form", clear_on_submit=False):
-        # White/bigger labels are provided via custom HTML; we collapse Streamlit labels.
-        st.markdown('<div style="font-size:18px; font-weight:900; color:#FFFFFF; margin:6px 0 6px 2px;">Username</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div style="font-size:20px; font-weight:950; color:#FFFFFF; margin:6px 0 8px 2px;">Username</div>',
+            unsafe_allow_html=True,
+        )
         username = st.text_input("", label_visibility="collapsed", placeholder="Enter username")
 
-        st.markdown('<div style="font-size:18px; font-weight:900; color:#FFFFFF; margin:14px 0 6px 2px;">Password</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div style="font-size:20px; font-weight:950; color:#FFFFFF; margin:16px 0 8px 2px;">Password</div>',
+            unsafe_allow_html=True,
+        )
         password = st.text_input("", type="password", label_visibility="collapsed", placeholder="Enter password")
 
         submitted = st.form_submit_button("Sign in")
@@ -146,6 +201,7 @@ def login_gate() -> None:
         else:
             st.error("Invalid User ID or Password.")
 
+    # Close the card
     st.markdown("</div></div>", unsafe_allow_html=True)
     st.stop()
 
@@ -775,264 +831,4 @@ with tab_overview:
             use_container_width=True,
         )
 
-    card_close()
-
-
-# =============================
-# GRAPHS TAB
-# =============================
-with tab_graphs:
-    card_open()
-    st.subheader("Graphs")
-
-    st.markdown("### 1) Speed over time (km/h)")
-    st.altair_chart(
-        alt_line(df.dropna(subset=["fixtime", "speed_kmh"]), "fixtime:T", "speed_kmh:Q", "deviceid:N",
-                 "Speed over time", "Speed (km/h)"),
-        use_container_width=True,
-    )
-
-    # --- UPDATED GRAPH (USING distance increments in meters -> cumulative km) ---
-    st.markdown("### 2) Distance travelled over time")
-    st.caption(
-        "This is now computed using attributes.distance (treated as meters travelled since the previous point). "
-        "We convert meters to km and plot a cumulative increasing curve."
-    )
-    st.altair_chart(
-        alt_line(
-            dist_time_df.dropna(subset=["fixtime", "distance_travelled_km"]),
-            "fixtime:T",
-            "distance_travelled_km:Q",
-            "deviceid:N",
-            "Distance travelled over time (cumulative from attributes.distance)",
-            "Distance travelled (km)",
-        ),
-        use_container_width=True,
-    )
-
-    st.markdown("### 3) Temp1 over time")
-    st.altair_chart(
-        alt_line(df.dropna(subset=["fixtime", "temp1"]), "fixtime:T", "temp1:Q", "deviceid:N",
-                 "Temp1 over time", "Temp1"),
-        use_container_width=True,
-    )
-    card_close()
-
-
-# =============================
-# POPULAR LOCATIONS TAB
-# =============================
-with tab_popular:
-    card_open()
-    st.subheader("Popular locations (hotspots)")
-    st.caption("Hotspots are computed by binning lat/lon into grid cells and counting visits.")
-
-    pop = df.dropna(subset=["latitude", "longitude"]).copy()
-    if pop.empty:
-        st.warning("No valid points to compute hotspots.")
-    else:
-        precision = 3
-        top_n = 500
-
-        pop["lat_bin"] = pop["latitude"].round(precision)
-        pop["lon_bin"] = pop["longitude"].round(precision)
-
-        hotspot = (
-            pop.groupby(["lat_bin", "lon_bin"], as_index=False)
-            .size()
-            .rename(columns={"size": "count"})
-            .sort_values("count", ascending=False)
-            .head(top_n)
-        )
-
-        # ✅ ONLY CHANGE: consider popular only if visits > 20
-        hotspot = hotspot[hotspot["count"] > 200].copy()
-
-        hotspot["label"] = hotspot.apply(
-            lambda r: f"Visits: {int(r['count'])}\nLat: {r['lat_bin']}\nLon: {r['lon_bin']}",
-            axis=1
-        )
-
-        # ---- ORANGE PIN + BIG LIGHT ORANGE HALO ----
-        hotspot["count"] = pd.to_numeric(hotspot["count"], errors="coerce").fillna(1).astype(int)
-
-        DOT_RADIUS = 22      # pinpoint
-        HALO_RADIUS = 260    # big halo
-
-        # ✅ ONLY CHANGE (Popular locations button): store / use focus location for map
-        if "hotspot_focus" not in st.session_state:
-            st.session_state["hotspot_focus"] = None
-
-        focus = st.session_state.get("hotspot_focus")
-        if focus is not None:
-            focus_lat, focus_lon = float(focus["lat"]), float(focus["lon"])
-            center_lat, center_lon = focus_lat, focus_lon
-            zoom_level = 16
-        else:
-            center_lat, center_lon = float(pop["latitude"].mean()), float(pop["longitude"].mean())
-            zoom_level = 12
-
-        halo_layer = pdk.Layer(
-            "ScatterplotLayer",
-            data=hotspot,
-            get_position="[lon_bin, lat_bin]",
-            get_radius=HALO_RADIUS,
-            stroked=False,
-            filled=True,
-            pickable=False,
-            # light orange halo
-            get_fill_color=[255, 165, 0, 40],
-        )
-
-        dot_layer = pdk.Layer(
-            "ScatterplotLayer",
-            data=hotspot,
-            get_position="[lon_bin, lat_bin]",
-            get_radius=DOT_RADIUS,
-            stroked=True,
-            filled=True,
-            pickable=True,
-            line_width_min_pixels=1,
-            # solid orange point
-            get_fill_color=[255, 140, 0, 220],
-            get_line_color=[180, 90, 0, 230],
-        )
-
-        # Optional focus ring so selected hotspot stands out even when zoomed in
-        focus_layer = None
-        if focus is not None:
-            focus_df = pd.DataFrame([{"lat": focus_lat, "lon": focus_lon, "label": focus.get("label", "")}])
-            focus_layer = pdk.Layer(
-                "ScatterplotLayer",
-                data=focus_df,
-                get_position="[lon, lat]",
-                get_radius=520,
-                stroked=True,
-                filled=False,
-                pickable=False,
-                line_width_min_pixels=3,
-                get_line_color=[255, 140, 0, 210],
-            )
-
-        view_state = pdk.ViewState(
-            latitude=center_lat,
-            longitude=center_lon,
-            zoom=zoom_level,
-            pitch=0,
-        )
-
-        layers = [halo_layer, dot_layer] + ([focus_layer] if focus_layer is not None else [])
-
-        st.pydeck_chart(
-            pdk.Deck(
-                initial_view_state=view_state,
-                layers=layers,
-                tooltip={"text": "{label}"},
-            )
-        )
-
-        # ✅ ONLY CHANGE (Popular locations button): buttons next to each hotspot row
-        st.markdown("### Hotspot table (click **View on map**)")
-        hotspot_tbl = hotspot[["lat_bin", "lon_bin", "count"]].copy()
-        hotspot_tbl = hotspot_tbl.sort_values("count", ascending=False).reset_index(drop=True)
-
-        header_cols = st.columns([2.2, 2.2, 1.2, 1.6])
-        header_cols[0].markdown("**Latitude**")
-        header_cols[1].markdown("**Longitude**")
-        header_cols[2].markdown("**Visits**")
-        header_cols[3].markdown("**Action**")
-
-        for i, r in hotspot_tbl.iterrows():
-            c0, c1, c2, c3 = st.columns([2.2, 2.2, 1.2, 1.6])
-            c0.write(float(r["lat_bin"]))
-            c1.write(float(r["lon_bin"]))
-            c2.write(int(r["count"]))
-            if c3.button("View on map", key=f"hotspot_view_{i}"):
-                st.session_state["hotspot_focus"] = {
-                    "lat": float(r["lat_bin"]),
-                    "lon": float(r["lon_bin"]),
-                    "label": f"Visits: {int(r['count'])}\nLat: {float(r['lat_bin'])}\nLon: {float(r['lon_bin'])}",
-                }
-                st.rerun()
-
-    card_close()
-
-
-# =============================
-# ROUTE MAP TAB
-# =============================
-with tab_route:
-    card_open()
-    st.subheader("Route map (polyline)")
-
-    # ✅ ONLY CHANGE (3): choose chassis number (names) + choose date from selected range
-    device_name_to_id = dict(zip(device_map_df["device_name"], device_map_df["deviceid"])) if not device_map_df.empty else {}
-    route_device_name = st.selectbox("Choose one bike (chassis number)", options=selected_device_names)
-    one_device = int(device_name_to_id[route_device_name])
-
-    selected_route_date = st.selectbox(
-        "Choose date for route map",
-        options=list(pd.date_range(start_date, end_date).date),
-    )
-
-    route = df[df["deviceid"] == one_device].sort_values("fixtime").copy()
-    route = route.dropna(subset=["latitude", "longitude", "fixtime"])
-
-    # filter route to selected date
-    route = route[route["fixtime"].dt.date == selected_route_date].copy()
-
-    if route.empty:
-        st.warning("No route points found for this device on the selected date.")
-    else:
-        path = route[["longitude", "latitude"]].values.tolist()
-        path_df = pd.DataFrame([{"deviceid": int(one_device), "path": path}])
-
-        # ✅ ONLY CHANGE: decrease line width to better match street width (keep neon blue)
-        path_layer = pdk.Layer(
-            "PathLayer",
-            data=path_df,
-            get_path="path",
-            get_width=2,               # thinner
-            width_min_pixels=2,        # still visible at different zoom levels
-            rounded=True,
-            get_color=[0, 255, 255],   # neon blue (cyan)
-            pickable=False,
-        )
-
-        start_pt = route.iloc[0]
-        end_pt = route.iloc[-1]
-
-        markers = pd.DataFrame([
-            {"name": "Start", "lon": float(start_pt["longitude"]), "lat": float(start_pt["latitude"])},
-            {"name": "End", "lon": float(end_pt["longitude"]), "lat": float(end_pt["latitude"])},
-        ])
-
-        marker_layer = pdk.Layer(
-            "ScatterplotLayer",
-            data=markers,
-            get_position="[lon, lat]",
-            get_radius=75,
-            pickable=True,
-        )
-
-        view_state = pdk.ViewState(
-            latitude=float(route["latitude"].mean()),
-            longitude=float(route["longitude"].mean()),
-            zoom=12,
-            pitch=0,
-        )
-
-        st.pydeck_chart(
-            pdk.Deck(
-                initial_view_state=view_state,
-                layers=[path_layer, marker_layer],
-                tooltip={"text": "{name}"},
-            )
-        )
-
-        st.markdown("### Route points preview")
-        st.dataframe(
-            route[["fixtime", "latitude", "longitude", "speed_kmh", "fuel1", "door", "ignition"]].head(300),
-            use_container_width=True,
-        )
     card_close()
