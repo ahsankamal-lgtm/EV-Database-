@@ -37,36 +37,40 @@ def login_gate() -> None:
     if st.session_state.logged_in:
         return
 
-    # ✅ ONLY CHANGE (2): beautify landing page
+    # ✅ ONLY CHANGE (1): Beautify landing page, linear, no visible lines, larger fonts
     st.markdown(
         """
         <div style="
-            max-width: 520px;
-            margin: 7vh auto 0 auto;
-            background: rgba(255,255,255,0.94);
-            border-radius: 22px;
-            padding: 26px 22px;
-            box-shadow: 0 18px 42px rgba(0,0,0,0.18);
-            border: 1px solid rgba(0,0,0,0.06);
+            max-width: 560px;
+            margin: 9vh auto 0 auto;
+            background: rgba(255,255,255,0.96);
+            border-radius: 24px;
+            padding: 30px 26px 26px 26px;
+            box-shadow: 0 22px 50px rgba(0,0,0,0.18);
+            border: 0;
         ">
-          <div style="display:flex; align-items:center; gap:12px; margin-bottom:6px;">
+          <div style="
+            display:flex; align-items:center; justify-content:center;
+            gap:14px; margin-bottom:14px;
+          ">
             <div style="
-              width:44px; height:44px; border-radius:14px;
+              width:52px; height:52px; border-radius:18px;
               display:flex; align-items:center; justify-content:center;
               background: linear-gradient(135deg,#0074D9,#2ED9C3);
-              color:white; font-size:22px; font-weight:800;
-              box-shadow: 0 10px 24px rgba(0,0,0,0.16);
+              color:white; font-size:24px; font-weight:900;
+              box-shadow: 0 12px 28px rgba(0,0,0,0.16);
+              border:0;
             ">EV</div>
-            <div>
-              <div style="font-size:22px; font-weight:800; color:#1f2937; line-height:1.15;">
+            <div style="text-align:left;">
+              <div style="font-size:28px; font-weight:900; color:#1f2937; line-height:1.1;">
                 EV Analytics App
               </div>
-              <div style="font-size:13px; color:#4b5563; margin-top:2px;">
-                Sign in to continue
+              <div style="font-size:16px; color:#4b5563; margin-top:6px;">
+                Please sign in to continue
               </div>
             </div>
           </div>
-          <div style="height:1px; background:rgba(0,0,0,0.06); margin:14px 0 18px 0;"></div>
+          <div style="height:10px;"></div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -77,7 +81,6 @@ def login_gate() -> None:
         password = st.text_input("Password", type="password")
         submitted = st.form_submit_button("Sign in")
 
-    # keep errors within the card feel
     if submitted:
         if _check_password(username.strip(), password):
             st.session_state.logged_in = True
@@ -791,17 +794,11 @@ with tab_popular:
             axis=1
         )
 
-        # ---- NEW: radar style + accurate dots (no huge orange circles) ----
+        # ---- ORANGE PIN + BIG LIGHT ORANGE HALO ----
         hotspot["count"] = pd.to_numeric(hotspot["count"], errors="coerce").fillna(1).astype(int)
 
-        # Opacity curve: more visits = darker blue (no stacking required)
-        max_c = int(hotspot["count"].max()) if len(hotspot) else 1
-        denom = np.log1p(max_c) if max_c > 0 else 1.0
-        hotspot["alpha"] = (40 + (np.log1p(hotspot["count"]) / denom) * 180).clip(40, 220)
-
-        # Sizes in meters
-        DOT_RADIUS = 18      # small, accurate location dot
-        HALO_RADIUS = 160    # soft radar halo
+        DOT_RADIUS = 22      # pinpoint
+        HALO_RADIUS = 260    # big halo
 
         halo_layer = pdk.Layer(
             "ScatterplotLayer",
@@ -811,20 +808,8 @@ with tab_popular:
             stroked=False,
             filled=True,
             pickable=False,
-            # light blue glow
-            get_fill_color=[80, 160, 255, 25],
-        )
-
-        ring_layer = pdk.Layer(
-            "ScatterplotLayer",
-            data=hotspot,
-            get_position="[lon_bin, lat_bin]",
-            get_radius=HALO_RADIUS,
-            stroked=True,
-            filled=False,
-            pickable=False,
-            line_width_min_pixels=1,
-            get_line_color=[80, 160, 255, 120],
+            # light orange halo
+            get_fill_color=[255, 165, 0, 40],
         )
 
         dot_layer = pdk.Layer(
@@ -836,9 +821,9 @@ with tab_popular:
             filled=True,
             pickable=True,
             line_width_min_pixels=1,
-            # darker blue as count increases (alpha column drives intensity)
-            get_fill_color="[30, 120, 255, alpha]",
-            get_line_color=[10, 60, 160, 180],
+            # solid orange point
+            get_fill_color=[255, 140, 0, 220],
+            get_line_color=[180, 90, 0, 230],
         )
 
         view_state = pdk.ViewState(
@@ -851,7 +836,7 @@ with tab_popular:
         st.pydeck_chart(
             pdk.Deck(
                 initial_view_state=view_state,
-                layers=[halo_layer, ring_layer, dot_layer],
+                layers=[halo_layer, dot_layer],
                 tooltip={"text": "{label}"},
             )
         )
@@ -867,13 +852,25 @@ with tab_popular:
 with tab_route:
     card_open()
     st.subheader("Route map (polyline)")
-    one_device = st.selectbox("Choose one bike (deviceid)", options=selected_devices)
+
+    # ✅ ONLY CHANGE (3): choose chassis number (names) + choose date from selected range
+    device_name_to_id = dict(zip(device_map_df["device_name"], device_map_df["deviceid"])) if not device_map_df.empty else {}
+    route_device_name = st.selectbox("Choose one bike (chassis number)", options=selected_device_names)
+    one_device = int(device_name_to_id[route_device_name])
+
+    selected_route_date = st.selectbox(
+        "Choose date for route map",
+        options=list(pd.date_range(start_date, end_date).date),
+    )
 
     route = df[df["deviceid"] == one_device].sort_values("fixtime").copy()
     route = route.dropna(subset=["latitude", "longitude", "fixtime"])
 
+    # filter route to selected date
+    route = route[route["fixtime"].dt.date == selected_route_date].copy()
+
     if route.empty:
-        st.warning("No route points found for this device in the selected range.")
+        st.warning("No route points found for this device on the selected date.")
     else:
         path = route[["longitude", "latitude"]].values.tolist()
         path_df = pd.DataFrame([{"deviceid": int(one_device), "path": path}])
