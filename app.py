@@ -37,14 +37,47 @@ def login_gate() -> None:
     if st.session_state.logged_in:
         return
 
-    st.title("Welcome!")
-    st.markdown("Please sign in to continue.")
+    # ✅ ONLY CHANGE (2): beautify landing page
+    st.markdown(
+        """
+        <div style="
+            max-width: 520px;
+            margin: 7vh auto 0 auto;
+            background: rgba(255,255,255,0.94);
+            border-radius: 22px;
+            padding: 26px 22px;
+            box-shadow: 0 18px 42px rgba(0,0,0,0.18);
+            border: 1px solid rgba(0,0,0,0.06);
+        ">
+          <div style="display:flex; align-items:center; gap:12px; margin-bottom:6px;">
+            <div style="
+              width:44px; height:44px; border-radius:14px;
+              display:flex; align-items:center; justify-content:center;
+              background: linear-gradient(135deg,#0074D9,#2ED9C3);
+              color:white; font-size:22px; font-weight:800;
+              box-shadow: 0 10px 24px rgba(0,0,0,0.16);
+            ">EV</div>
+            <div>
+              <div style="font-size:22px; font-weight:800; color:#1f2937; line-height:1.15;">
+                EV Analytics App
+              </div>
+              <div style="font-size:13px; color:#4b5563; margin-top:2px;">
+                Sign in to continue
+              </div>
+            </div>
+          </div>
+          <div style="height:1px; background:rgba(0,0,0,0.06); margin:14px 0 18px 0;"></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     with st.form("login_form", clear_on_submit=False):
         username = st.text_input("User ID")
         password = st.text_input("Password", type="password")
         submitted = st.form_submit_button("Sign in")
 
+    # keep errors within the card feel
     if submitted:
         if _check_password(username.strip(), password):
             st.session_state.logged_in = True
@@ -91,17 +124,19 @@ html, body,
   background: transparent !important;
 }
 
-/* ---------- GLOBAL TEXT (ALL BLACK) ---------- */
+/* ---------- GLOBAL TEXT (DARK GREY FOR CLARITY) ---------- */
+/* ✅ ONLY CHANGE (3): any text on white should be dark grey */
 body, p, span, div, label, li {
-  color: #000000 !important;
+  color: #374151 !important;
 }
 
-/* ---------- HEADINGS (BLACK, NOT GRADIENT) ---------- */
+/* ---------- HEADINGS (DARK GREY, NOT GRADIENT) ---------- */
 /* IMPORTANT: exclude the custom title so it stays gradient */
+/* ✅ ONLY CHANGE (3): white headings -> dark grey for clarity */
 h1:not(.gradient-title), h2, h3, h4, h5, h6 {
-  color: #FFFFFF !important;
+  color: #374151 !important;
   background: none !important;
-  -webkit-text-fill-color: #FFFFFF !important;
+  -webkit-text-fill-color: #374151 !important;
 }
 
 /* ---------- TITLE GRADIENT ONLY (Turquoise/Blue -> White) ---------- */
@@ -120,9 +155,10 @@ h1.gradient-title {
   text-stroke: 0 !important;
 }
 
-/* ---------- CAPTION (BLACK) ---------- */
+/* ---------- CAPTION (DARK GREY) ---------- */
+/* ✅ ONLY CHANGE (3) */
 div[data-testid="stCaptionContainer"] {
-  color: #000000 !important;
+  color: #374151 !important;
 }
 
 /* ---------- CONTENT WIDTH ---------- */
@@ -139,7 +175,7 @@ section[data-testid="stSidebar"] {
   border-right: 1px solid rgba(0,0,0,0.08);
 }
 section[data-testid="stSidebar"] * {
-  color: #000000 !important;
+  color: #374151 !important; /* ✅ ONLY CHANGE (3) */
 }
 
 /* ---------- CARD ---------- */
@@ -328,7 +364,7 @@ if DB_DRIVER is None:
     st.error(
         "Missing MySQL driver in the Streamlit environment.\n\n"
         "Fix:\n"
-        "1) Ensure `requirements.txt` is in the repo ROOT (same folder as app.py)\n"
+        "1) Ensure requirements.txt is in the repo ROOT (same folder as app.py)\n"
         "2) Put this inside requirements.txt:\n\n"
         "streamlit\npandas\nnumpy\naltair\npydeck\npymysql\nmysql-connector-python\n\n"
         "Then redeploy / reboot the app from Streamlit Cloud."
@@ -569,10 +605,10 @@ if not device_map_df.empty and "device_name" not in df.columns:
 # =============================
 def build_distance_over_time_using_distance(raw_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Builds an *increasing* distance travelled curve by using `attributes.distance` as an increment.
+    Builds an *increasing* distance travelled curve by using attributes.distance as an increment.
 
     Assumption (based on your dataset):
-    - `distance` is the distance travelled since the previous point (increment)
+    - distance is the distance travelled since the previous point (increment)
     - it is in METERS
     Therefore:
     - per_row_km = distance / 1000
@@ -636,18 +672,29 @@ with tab_overview:
     df_day = df.dropna(subset=["fixtime"]).copy()
     df_day["date"] = df_day["fixtime"].dt.date
 
-    daily_rows = []
-    for day, day_df in df_day.groupby("date"):
-        for deviceid, g in day_df.groupby("deviceid"):
-            g = g.sort_values("fixtime")
+    # ✅ ONLY CHANGE (1): ensure each selected date renders (even if no rows for some bikes)
+    for day in pd.date_range(start_date, end_date).date:
+        day_df = df_day[df_day["date"] == day]
+        daily_rows = []
+
+        for deviceid in selected_devices:
+            g = day_df[day_df["deviceid"] == deviceid].sort_values("fixtime")
+
+            if g.empty:
+                daily_rows.append({
+                    "Date": day,
+                    "Chassis number": deviceid_to_chassis.get(int(deviceid), str(int(deviceid))),
+                    "Avg speed (km/h) [zeros ignored]": np.nan,
+                    "Max speed (km/h)": np.nan,
+                    "Total distance (km)": np.nan,
+                    "Points": 0,
+                })
+                continue
 
             nz = g.loc[g["speed_kmh"] > 0, "speed_kmh"].dropna()
             avg_speed = float(nz.mean()) if len(nz) else np.nan
             max_speed = float(g["speed_kmh"].max()) if g["speed_kmh"].notna().any() else np.nan
 
-            total_dist = np.nan
-
-            # ✅ ONLY CHANGE: do NOT use totalDistance; use attributes.distance (meters) only
             dd = g["distance"].dropna()
             total_dist = float(dd.sum()) if len(dd) else np.nan  # meters
 
@@ -662,7 +709,7 @@ with tab_overview:
 
         st.markdown(f"### {day}")
         st.dataframe(
-            pd.DataFrame([r for r in daily_rows if r["Date"] == day]).sort_values("Chassis number"),
+            pd.DataFrame(daily_rows).sort_values("Chassis number"),
             use_container_width=True,
         )
 
@@ -686,7 +733,7 @@ with tab_graphs:
     # --- UPDATED GRAPH (USING distance increments in meters -> cumulative km) ---
     st.markdown("### 2) Distance travelled over time")
     st.caption(
-        "This is now computed using `attributes.distance` (treated as meters travelled since the previous point). "
+        "This is now computed using attributes.distance (treated as meters travelled since the previous point). "
         "We convert meters to km and plot a cumulative increasing curve."
     )
     st.altair_chart(
