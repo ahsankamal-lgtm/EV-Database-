@@ -463,20 +463,20 @@ def alt_line(df, x, y, color, title, y_title=None):
         .interactive()
     )
 
-
 # =============================
 # DB DRIVER AUTO-DETECT
 # =============================
 DB_DRIVER = None
 try:
-    import pymysql  # type: ignore
-    DB_DRIVER = "pymysql"
+    import mysql.connector  # type: ignore
+    DB_DRIVER = "mysql-connector"
 except Exception:
     try:
-        import mysql.connector  # type: ignore
-        DB_DRIVER = "mysql-connector"
+        import pymysql  # type: ignore
+        DB_DRIVER = "pymysql"
     except Exception:
         DB_DRIVER = None
+
 
 if DB_DRIVER is None:
     st.error(
